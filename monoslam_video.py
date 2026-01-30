@@ -8,7 +8,7 @@ from tqdm import tqdm
 # Import core SLAM classes from the original script
 # Ensure monoslam.py is in the same directory or python path
 try:
-    from monoslam import MultiClassSegmentation, RoadAreaDetector, PinholeCamera, VisualOdometry
+    from monoslam import MultiClassSegmentation, PinholeCamera, VisualOdometry
 except ImportError as e:
     print(f"Error importing monoslam: {e}")
     sys.exit(1)
@@ -69,7 +69,7 @@ def parse_hhmmss(time_str):
     s = int(time_str[4:6])
     return h * 3600 + m * 60 + s
 
-def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0, mask_path=None):
+def run_video(video_path, seg_model=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0, mask_path=None):
     sequence_name = video_path.split("/")[-1]
     print(f"--- Running on Video: {sequence_name} (Scale: {downscale}) ---")
     
@@ -198,17 +198,12 @@ def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800,
         else:
             img_gray = img
             
-        road_vp = None
-        if road_detector:
-            display_img = road_detector.detect_and_draw(img)
-            road_vp = road_detector.get_vanishing_point()
+        if len(img.shape) == 2:
+            display_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         else:
-            if len(img.shape) == 2:
-                display_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            else:
-                display_img = img.copy()
-
-        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp, static_mask=static_mask)
+            display_img = img.copy()
+            
+        vo.process_frame(i, img_gray, img_color=img, static_mask=static_mask)
         
         # Visualize static mask if present
         if static_mask is not None:
@@ -216,6 +211,19 @@ def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800,
             mask_overlay = display_img.copy()
             mask_overlay[static_mask == 0] = (0, 0, 180)  # Red tint on masked areas
             cv2.addWeighted(mask_overlay, 0.3, display_img, 0.7, 0, display_img)
+            
+        # Visualize Dynamic/Road Mask (Green for Drivable Area)
+        if vo.latest_seg_mask is not None:
+            # vo.latest_seg_mask: 1=Road, 0=Bg
+            road_overlay = display_img.copy()
+            # Tint road green
+            road_overlay[vo.latest_seg_mask == 1] = (0, 180, 0)
+            cv2.addWeighted(road_overlay, 0.3, display_img, 0.7, 0, display_img)
+            
+        # Visualize YOLOP-derived VP
+        if vo.curr_road_vp is not None:
+             cv2.circle(display_img, vo.curr_road_vp, 8, (255, 0, 0), -1) # Blue dot for VP
+             cv2.putText(display_img, "VP", (vo.curr_road_vp[0] + 10, vo.curr_road_vp[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
         
         estimated_heading = vo.get_heading()
         turn_rate = estimated_heading - last_heading
@@ -380,7 +388,6 @@ def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800,
 def main():
     parser = argparse.ArgumentParser(description="Run MonoSLAM on a video file.")
     parser.add_argument("video_path", type=str, help="Path to the input mp4 video file.")
-    parser.add_argument("--no_road_detection", action="store_true", help="Disable road area detection.")
     parser.add_argument("--no_segmentation", action="store_true", help="Disable semantic segmentation (faster).")
     parser.add_argument("--scale", type=float, default=0.5, help="Downscale factor for processing (default 0.5).")
     parser.add_argument("--fov", type=float, help="Horizontal Field of View (FOV) in degrees (e.g., 90, 120).")
@@ -402,11 +409,7 @@ def main():
             print(f"Failed to load DL model: {e}")
             seg_model = None
             
-    road_detector = None
-    if not args.no_road_detection:
-        road_detector = RoadAreaDetector()
-    
-    run_video(args.video_path, seg_model, road_detector, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn, mask_path=args.mask)
+    run_video(args.video_path, seg_model, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn, mask_path=args.mask)
 
 if __name__ == "__main__":
     main()

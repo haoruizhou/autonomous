@@ -12,87 +12,59 @@ class MultiClassSegmentation:
         if torch.backends.mps.is_available(): 
              self.device = torch.device('mps')
         
-        print(f"Loading DeepLabV3 on {self.device}...")
-        self.model = models.segmentation.deeplabv3_resnet50(pretrained=True).to(self.device)
-        self.model.eval()
+        print(f"Loading YOLOP (hustvl/yolop) on {self.device}...")
+        try:
+            # Load YOLOP from torch hub
+            self.model = torch.hub.load('hustvl/yolop', 'yolop', pretrained=True)
+            self.model.to(self.device)
+            self.model.eval()
+        except Exception as e:
+            print(f"Error loading YOLOP: {e}")
+            raise e
         
         self.transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize(256), 
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        self.dynamic_classes = [2, 6, 7, 14, 15, 19] 
-        
     def get_mask(self, img_bgr):
+        # YOLOP expects RGB, 640x640 (or multiple of 32). Resize logic might be needed.
+        # It's robust to size but 640 width is standard.
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        input_tensor = self.transform(img_rgb).unsqueeze(0).to(self.device)
+        # Resize to multiple of 32 (YOLOP requirement)
+        h, w = img_rgb.shape[:2]
+        new_h = (h + 31) // 32 * 32
+        new_w = (w + 31) // 32 * 32
         
-        with torch.no_grad():
-            output = self.model(input_tensor)['out'][0]
-        
-        output_predictions = output.argmax(0).byte().cpu().numpy()
-        mask_resized = cv2.resize(output_predictions, (img_bgr.shape[1], img_bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
-        
-        binary_mask = np.ones_like(mask_resized, dtype=np.uint8)
-        for cls_id in self.dynamic_classes:
-            binary_mask[mask_resized == cls_id] = 0
-        return binary_mask
-
-class RoadAreaDetector:
-    def __init__(self):
-        self.vanishing_point = None
-        
-    def detect_and_draw(self, img):
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        height, width = img.shape[:2]
-        seed_point = (width // 2, height - 50)
-        
-        mask_shape = (height + 2, width + 2)
-        mask = np.zeros(mask_shape, np.uint8)
-        
-        loDiff = (15, 15, 15) 
-        upDiff = (15, 15, 15)
-        
-        flooded = img.copy()
-        flags = 4 | (255 << 8) | cv2.FLOODFILL_FIXED_RANGE
-        cv2.floodFill(flooded, mask, seed_point, (0, 255, 0), loDiff, upDiff, flags)
-        
-        road_mask = mask[1:-1, 1:-1]
-        kernel = np.ones((7,7), np.uint8)
-        road_mask = cv2.morphologyEx(road_mask, cv2.MORPH_CLOSE, kernel)
-        road_mask = cv2.morphologyEx(road_mask, cv2.MORPH_OPEN, kernel)
-
-        # Estimate Vanishing Point (Centroid of top part of the mask)
-        # We look at the top 60% of the image to find the "far" road
-        top_h = int(height * 0.6)
-        road_mask_top = road_mask[:top_h, :]
-        
-        M = cv2.moments(road_mask_top)
-        if M["m00"] > 0:
-            cX = int(M["m10"] / M["m00"])
-            cY = int(M["m01"] / M["m00"])
-            self.vanishing_point = (cX, cY) # Note: cY is relative to top 0
+        if new_h != h or new_w != w:
+            img_input = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         else:
-            self.vanishing_point = (width // 2, height // 3) # Default logic
+            img_input = img_rgb
+        
+        img_tensor = self.transform(img_input).to(self.device)
+        if len(img_tensor.shape) == 3:
+            img_tensor = img_tensor.unsqueeze(0)
+            
+        with torch.no_grad():
+            # YOLOP returns: (det_out, da_seg_out, ll_seg_out)
+            # da_seg_out: Drivable Area
+            # ll_seg_out: Lane Line
+            _, da_seg_out, _ = self.model(img_tensor)
+            
+        # da_seg_out shape: [1, 2, H, W] -> argmax(1) -> [1, H, W]
+        # Or sometimes sigmoid?
+        # Typically YOLOP segmentation output is raw logits.
+        
+        # Resize output back to original image size
+        da_seg_out = torch.nn.functional.interpolate(da_seg_out, size=(h, w), mode='bilinear', align_corners=True)
+        
+        _, da_seg_mask = torch.max(da_seg_out, 1)
+        da_seg_mask = da_seg_mask.int().squeeze().cpu().numpy()
+        
+        # da_seg_mask: 1 = Road (Drivable), 0 = Background
+        
+        return da_seg_mask
 
-        overlay = img.copy()
-        overlay[road_mask > 0] = (0, 255, 0)
-        alpha = 0.3
-        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
-        
-        contours, _ = cv2.findContours(road_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(img, contours, -1, (0, 255, 0), 2)
-        
-        # Draw VP
-        if self.vanishing_point:
-             cv2.circle(img, self.vanishing_point, 5, (255, 0, 0), -1) # Blue dot
-        
-        return img
-    
-    def get_vanishing_point(self):
-        return self.vanishing_point
 
 class DataLoader:
     def __init__(self, data_path, subfolder):
@@ -159,6 +131,8 @@ class VisualOdometry:
         self.feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=7, blockSize=7)
         self.lk_params = dict(winSize=(15, 15), criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
         self.seg_model = None
+        self.latest_seg_mask = None # Store latest mask for visualization
+        self.curr_road_vp = None # Store latest VP for visualization
         self.is_stopped = False
         self.current_flow_mag = 0.0
 
@@ -209,7 +183,9 @@ class VisualOdometry:
     def set_segmentation_model(self, model):
         self.seg_model = model
 
-    def process_frame(self, frame_id, new_frame, img_color=None, road_vp=None, static_mask=None):
+    def process_frame(self, frame_id, new_frame, img_color=None, static_mask=None):
+        road_vp = None # Initialize to avoid UnboundLocalError
+        
         if self.last_frame is None:
             self.last_frame = new_frame
         if self.last_frame is None:
@@ -226,6 +202,29 @@ class VisualOdometry:
                         if static_mask[y, x] == 1:  # 1 = valid, 0 = masked
                             valid_kp.append(pt)
                 self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+
+            # Filter keypoints by SEGMENTATION mask on first frame
+            if self.seg_model is not None and img_color is not None and len(self.kp1) > 0:
+                mask = self.seg_model.get_mask(img_color)
+                
+                # Apply static mask logic if needed (consistency)
+                if static_mask is not None:
+                    if mask.shape != static_mask.shape:
+                        static_mask_for_op = cv2.resize(static_mask, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        static_mask_for_op = static_mask
+                    mask = cv2.bitwise_and(mask.astype(np.uint8), static_mask_for_op.astype(np.uint8))
+                
+                valid_kp = []
+                for pt in self.kp1:
+                    x, y = int(pt[0]), int(pt[1])
+                    if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
+                         if mask[y, x] == 1: # Road only
+                             valid_kp.append(pt)
+                self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+                
+                # Log init
+                print(f"Features initialized on road: {len(self.kp1)}")
             
             self.current_flow_mag = 0.0
             return
@@ -245,6 +244,26 @@ class VisualOdometry:
                              valid_kp.append(pt)
                  self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
             
+             # Filter keypoints by SEGMENTATION mask (Top Block)
+             if self.seg_model is not None and img_color is not None and len(self.kp1) > 0:
+                mask = self.seg_model.get_mask(img_color)
+                # Apply static mask logic if needed
+                if static_mask is not None:
+                    if mask.shape != static_mask.shape:
+                        static_mask_for_op = cv2.resize(static_mask, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        static_mask_for_op = static_mask
+                    mask = cv2.bitwise_and(mask.astype(np.uint8), static_mask_for_op.astype(np.uint8))
+                
+                valid_kp = []
+                for pt in self.kp1:
+                    x, y = int(pt[0]), int(pt[1])
+                    if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
+                         if mask[y, x] == 1: 
+                             valid_kp.append(pt)
+                self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+                print(f"Features replenished (top) on road: {len(self.kp1)}")
+
              self.current_flow_mag = 0.0
              return
 
@@ -265,19 +284,69 @@ class VisualOdometry:
             good_old = good_old[valid_indices]
             good_new = good_new[valid_indices]
         
-        # Apply semantic segmentation mask (dynamic objects)
+        # Apply semantic segmentation mask (dynamic objects / road segmentation)
+        # With YOLOP: 1 = Drivable Area, 0 = Background
+        # We want to TRACK on Drivable Area (1).
         if self.seg_model is not None and img_color is not None:
             mask = self.seg_model.get_mask(img_color)
+            
+            # Apply static mask to YOLOP mask to remove car body from "Road"
+            if static_mask is not None:
+                # static_mask is 1 for valid, 0 for masked
+                # YOLOP mask is 1 for road, 0 for bg
+                # We want 1 only if BOTH are 1
+                
+                # Ensure shapes match exactly (resize static_mask to mask if needed)
+                if mask.shape != static_mask.shape:
+                    # Note: cv2.resize expects (width, height), shape is (height, width)
+                    static_mask_for_op = cv2.resize(static_mask, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+                else:
+                    static_mask_for_op = static_mask
+                    
+                mask = cv2.bitwise_and(mask.astype(np.uint8), static_mask_for_op.astype(np.uint8))
+            
+            self.latest_seg_mask = mask # Store for visualization
+            
             valid_indices = []
             for idx, pt in enumerate(good_new):
                 x, y = int(pt[0]), int(pt[1])
                 if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
+                    # YOLOP: Keep if 1 (Road)
                     if mask[y, x] == 1: 
                         valid_indices.append(idx)
+            
+            # DEBUG: Log feature survival rate
+            print(f"Features on road: {len(valid_indices)} / {len(good_new)}")
                         
             good_old = good_old[valid_indices]
             good_new = good_new[valid_indices]
 
+            # --- CALCULATE VP FROM YOLOP MASK ---
+            # Use the centroid of the top portion of the road mask
+            # This turns the segmentation into a heading/turn signal
+            h_mask, w_mask = mask.shape
+            # Analyze top 60% of the mask to find "far" road
+            top_h_limit = int(h_mask * 0.6)
+            mask_top = mask[:top_h_limit, :]
+            
+            # Convert to uint8 for moments
+            mask_uint8 = (mask_top == 1).astype(np.uint8) * 255
+            M = cv2.moments(mask_uint8)
+            
+            if M["m00"] > 0:
+                cX = int(M["m10"] / M["m00"])
+                cY_rel = int(M["m01"] / M["m00"])
+                # cY is relative to the top of the image
+                yolop_vp = (cX, cY_rel)
+                
+                # OVERRIDE the passed road_vp
+                road_vp = yolop_vp
+                self.curr_road_vp = yolop_vp
+            else:
+                self.curr_road_vp = None
+        else:
+            self.curr_road_vp = None
+            
         if len(good_new) < 50:
              self.kp1 = self.detect_features_grid(new_frame)
 
@@ -290,6 +359,26 @@ class VisualOdometry:
                          if static_mask[y, x] == 1:
                              valid_kp.append(pt)
                  self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+
+             # Filter keypoints by SEGMENTATION mask (Bottom Block)
+             # Reuse latest_seg_mask if available
+             if self.seg_model is not None and len(self.kp1) > 0:
+                 # If we are here, we likely processed the frame and have a mask
+                 mask = self.latest_seg_mask
+                 if mask is None and img_color is not None:
+                     mask = self.seg_model.get_mask(img_color)
+                     # (Skip static mask merge redundancy if we just computed it raw, but keeping it simple)
+                 
+                 if mask is not None:
+                    valid_kp = []
+                    for pt in self.kp1:
+                        x, y = int(pt[0]), int(pt[1])
+                        if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
+                             if mask[y, x] == 1: 
+                                 valid_kp.append(pt)
+                    self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+                    print(f"Features replenished (bottom) on road: {len(self.kp1)}")
+
              self.last_frame = new_frame
              self.current_flow_mag = 0.0
              return
@@ -369,7 +458,7 @@ class VisualOdometry:
         yaw = np.arctan2(forward_x, forward_z)
         return np.degrees(yaw)
 
-def run_sequence(data_dir, sequence_name, seg_model=None, road_detector=None, traj_img_size=800, downscale=0.5):
+def run_sequence(data_dir, sequence_name, seg_model=None, traj_img_size=800, downscale=0.5):
     print(f"--- Running Sequence: {sequence_name} (Scale: {downscale}) ---")
     loader = DataLoader(data_dir, sequence_name)
     gt_loader = OxtsLoader(data_dir)
@@ -422,17 +511,12 @@ def run_sequence(data_dir, sequence_name, seg_model=None, road_detector=None, tr
         else:
             img_gray = img
             
-        road_vp = None
-        if road_detector:
-            display_img = road_detector.detect_and_draw(img) # Draw on scaled image
-            road_vp = road_detector.get_vanishing_point()
-        else:
             if len(img.shape) == 2:
                 display_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             else:
                  display_img = img.copy()
 
-        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp)
+        vo.process_frame(i, img_gray, img_color=img)
         
         estimated_heading = vo.get_heading()
         
@@ -508,12 +592,11 @@ def main():
         print(f"Failed to load DL model: {e}")
         seg_model = None
         
-    road_detector = RoadAreaDetector()
     
     downscale_factor = 0.5 
     
     for seq in sequences:
-        run_sequence(data_dir, seq, seg_model, road_detector, downscale=downscale_factor)
+        run_sequence(data_dir, seq, seg_model, downscale=downscale_factor)
         
     cv2.destroyAllWindows()
 
