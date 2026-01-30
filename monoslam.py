@@ -153,22 +153,100 @@ class VisualOdometry:
         self.cur_R = np.eye(3)
         self.cur_t = np.zeros((3, 1))
         self.traj = [] 
-        self.detector = cv2.FastFeatureDetector_create(threshold=20, nonmaxSuppression=True)
+        self.traj = [] 
+        # Using Good Features To Track (Shi-Tomasi) instead of FAST
+        # We don't initialize a single detector object because GFTT is a function call
+        self.feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=7, blockSize=7)
         self.lk_params = dict(winSize=(15, 15), criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
         self.seg_model = None
         self.is_stopped = False
         self.current_flow_mag = 0.0
 
+    def detect_features_grid(self, img, grid_size=(4, 4), max_feats_total=1000):
+        """
+        Detect features in a grid to ensure distribution across the image.
+        Useful for low-texture roads where features might cluster on the horizon.
+        """
+        h, w = img.shape[:2]
+        ny, nx = grid_size
+        dy, dx = h // ny, w // nx
+        
+        feats_per_cell = max_feats_total // (nx * ny)
+        
+        all_keypoints = []
+        
+        for y in range(0, h, dy):
+            for x in range(0, w, dx):
+                # Define cell ROI
+                y_end = min(y + dy, h)
+                x_end = min(x + dx, w)
+                
+                # Sanity check
+                if x >= w or y >= h: continue
+                
+                roi = img[y:y_end, x:x_end]
+                
+                # Detect in ROI
+                # Using Good Features To Track (Shi-Tomasi)
+                # It's more sensitive to corners than FAST
+                p0 = cv2.goodFeaturesToTrack(roi, mask=None, **self.feature_params)
+                
+                if p0 is not None:
+                    # Offset points to global coordinates
+                    p0 = p0.reshape(-1, 2)
+                    p0[:, 0] += x
+                    p0[:, 1] += y
+                    
+                    # If we found too many, take strongest? GFTT already returns strongest.
+                    # Just cap the number
+                    if len(p0) > feats_per_cell:
+                        p0 = p0[:feats_per_cell]
+                        
+                    all_keypoints.extend(p0)
+                    
+        return np.array(all_keypoints, dtype=np.float32)
+
     def set_segmentation_model(self, model):
         self.seg_model = model
 
-    def process_frame(self, frame_id, new_frame, img_color=None, road_vp=None):
+    def process_frame(self, frame_id, new_frame, img_color=None, road_vp=None, static_mask=None):
         if self.last_frame is None:
             self.last_frame = new_frame
-            self.kp1 = self.detector.detect(new_frame, None)
-            self.kp1 = np.array([x.pt for x in self.kp1], dtype=np.float32)
+        if self.last_frame is None:
+            self.last_frame = new_frame
+            self.kp1 = self.detect_features_grid(new_frame)
+
+            
+            # Filter keypoints by static mask on first frame
+            if static_mask is not None and len(self.kp1) > 0:
+                valid_kp = []
+                for pt in self.kp1:
+                    x, y = int(pt[0]), int(pt[1])
+                    if 0 <= y < static_mask.shape[0] and 0 <= x < static_mask.shape[1]:
+                        if static_mask[y, x] == 1:  # 1 = valid, 0 = masked
+                            valid_kp.append(pt)
+                self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+            
             self.current_flow_mag = 0.0
             return
+
+        # Ensure we have features to track
+        if self.kp1 is None or len(self.kp1) == 0:
+             self.last_frame = new_frame
+             self.kp1 = self.detect_features_grid(new_frame)
+             
+             # Also filter new keypoints by static mask
+             if static_mask is not None and len(self.kp1) > 0:
+                 valid_kp = []
+                 for pt in self.kp1:
+                     x, y = int(pt[0]), int(pt[1])
+                     if 0 <= y < static_mask.shape[0] and 0 <= x < static_mask.shape[1]:
+                         if static_mask[y, x] == 1:
+                             valid_kp.append(pt)
+                 self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
+            
+             self.current_flow_mag = 0.0
+             return
 
         p1, st, err = cv2.calcOpticalFlowPyrLK(self.last_frame, new_frame, self.kp1, None, **self.lk_params)
         
@@ -176,6 +254,18 @@ class VisualOdometry:
         good_old = self.kp1[st_flat == 1]
         good_new = p1[st_flat == 1]
         
+        # Apply static mask (e.g., car body exclusion)
+        if static_mask is not None:
+            valid_indices = []
+            for idx, pt in enumerate(good_new):
+                x, y = int(pt[0]), int(pt[1])
+                if 0 <= y < static_mask.shape[0] and 0 <= x < static_mask.shape[1]:
+                    if static_mask[y, x] == 1:  # 1 = valid, 0 = masked
+                        valid_indices.append(idx)
+            good_old = good_old[valid_indices]
+            good_new = good_new[valid_indices]
+        
+        # Apply semantic segmentation mask (dynamic objects)
         if self.seg_model is not None and img_color is not None:
             mask = self.seg_model.get_mask(img_color)
             valid_indices = []
@@ -189,8 +279,17 @@ class VisualOdometry:
             good_new = good_new[valid_indices]
 
         if len(good_new) < 50:
-             kp = self.detector.detect(new_frame, None)
-             self.kp1 = np.array([x.pt for x in kp], dtype=np.float32)
+             self.kp1 = self.detect_features_grid(new_frame)
+
+             # Also filter new keypoints by static mask
+             if static_mask is not None and len(self.kp1) > 0:
+                 valid_kp = []
+                 for pt in self.kp1:
+                     x, y = int(pt[0]), int(pt[1])
+                     if 0 <= y < static_mask.shape[0] and 0 <= x < static_mask.shape[1]:
+                         if static_mask[y, x] == 1:
+                             valid_kp.append(pt)
+                 self.kp1 = np.array(valid_kp, dtype=np.float32) if valid_kp else np.array([], dtype=np.float32).reshape(-1, 2)
              self.last_frame = new_frame
              self.current_flow_mag = 0.0
              return

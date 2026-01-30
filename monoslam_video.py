@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import sys
+import os
 import argparse
 from tqdm import tqdm
 
@@ -68,7 +69,7 @@ def parse_hhmmss(time_str):
     s = int(time_str[4:6])
     return h * 3600 + m * 60 + s
 
-def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0):
+def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0, mask_path=None):
     sequence_name = video_path.split("/")[-1]
     print(f"--- Running on Video: {sequence_name} (Scale: {downscale}) ---")
     
@@ -154,6 +155,23 @@ def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800,
     if seg_model:
         vo.set_segmentation_model(seg_model)
     
+    # Load static mask (e.g., for car body exclusion)
+    static_mask = None
+    if mask_path:
+        if os.path.exists(mask_path):
+            static_mask_full = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if static_mask_full is not None:
+                # Resize mask to match processing resolution
+                static_mask = cv2.resize(static_mask_full, (w, h), interpolation=cv2.INTER_NEAREST)
+                # Normalize: 255 = valid, 0 = masked
+                static_mask = (static_mask > 127).astype(np.uint8)
+                print(f"Loaded mask from: {mask_path}")
+                print(f"Masked pixels: {np.sum(static_mask == 0)} / {w * h}")
+            else:
+                print(f"Warning: Could not read mask file: {mask_path}")
+        else:
+            print(f"Warning: Mask file not found: {mask_path}")
+    
     traj_img = np.zeros((traj_img_size, traj_img_size, 3), dtype=np.uint8)
     
     cv2.namedWindow(f'MonoSLAM - {sequence_name}', cv2.WINDOW_NORMAL)
@@ -190,7 +208,14 @@ def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800,
             else:
                 display_img = img.copy()
 
-        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp)
+        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp, static_mask=static_mask)
+        
+        # Visualize static mask if present
+        if static_mask is not None:
+            # Draw masked region with semi-transparent red
+            mask_overlay = display_img.copy()
+            mask_overlay[static_mask == 0] = (0, 0, 180)  # Red tint on masked areas
+            cv2.addWeighted(mask_overlay, 0.3, display_img, 0.7, 0, display_img)
         
         estimated_heading = vo.get_heading()
         turn_rate = estimated_heading - last_heading
@@ -364,6 +389,7 @@ def main():
     parser.add_argument("--stop_threshold", type=float, default=1.0, help="Movement threshold in pixels (default 1.0). Increase if false stopped detection.")
     parser.add_argument("--view_mode", type=str, default="global", choices=["global", "ego"], help="Map view mode: 'global' (North Up, default) or 'ego' (Vehicle Up).")
     parser.add_argument("--max_turn", type=float, default=10.0, help="Maximum allowed turn rate (deg/frame) to reject outliers.")
+    parser.add_argument("--mask", type=str, default=None, help="Path to mask image (PNG). Use mask_editor.py to create one.")
 
     args = parser.parse_args()
 
@@ -380,7 +406,7 @@ def main():
     if not args.no_road_detection:
         road_detector = RoadAreaDetector()
     
-    run_video(args.video_path, seg_model, road_detector, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn)
+    run_video(args.video_path, seg_model, road_detector, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn, mask_path=args.mask)
 
 if __name__ == "__main__":
     main()
