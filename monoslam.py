@@ -114,7 +114,7 @@ class PinholeCamera:
         self.K_inv = np.linalg.inv(self.K)
 
 class VisualOdometry:
-    def __init__(self, cam, stop_threshold=1.0, max_turn_degrees=10.0):
+    def __init__(self, cam, stop_threshold=1.0, max_turn_degrees=10.0, feature_params=None):
         self.cam = cam
         self.stop_threshold = stop_threshold
         self.max_turn_degrees = max_turn_degrees
@@ -128,7 +128,10 @@ class VisualOdometry:
         self.traj = [] 
         # Using Good Features To Track (Shi-Tomasi) instead of FAST
         # We don't initialize a single detector object because GFTT is a function call
-        self.feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=7, blockSize=7)
+        if feature_params is None:
+             self.feature_params = dict(maxCorners=200, qualityLevel=0.01, minDistance=7, blockSize=7)
+        else:
+             self.feature_params = feature_params
         self.lk_params = dict(winSize=(15, 15), criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
         self.seg_model = None
         self.latest_seg_mask = None # Store latest mask for visualization

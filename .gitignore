@@ -182,3 +182,24 @@ cython_debug/
 
 data
 .DS_Store
+
+# ---------------------------------
+# Project Specific Ignores
+# ---------------------------------
+
+# Model Weights and Checkpoints
+*.pth
+checkpoints/
+
+# Cloned Sub-Repositories (Dependencies)
+DROID-SLAM/
+Depth-Anything-V2/
+lietorch/
+
+# Results and Outputs
+results/
+results_cuda/
+*.npy
+
+# Colab
+colab_droid_pipeline.ipynb
