@@ -7,7 +7,7 @@ from tqdm import tqdm
 # Import core SLAM classes from the original script
 # Ensure monoslam.py is in the same directory or python path
 try:
-    from monoslam import MultiClassSegmentation, RoadAreaDetector, PinholeCamera, VisualOdometry, DepthAnythingV2
+    from monoslam import MultiClassSegmentation, RoadAreaDetector, PinholeCamera, VisualOdometry
 except ImportError as e:
     print(f"Error importing monoslam: {e}")
     sys.exit(1)
@@ -68,7 +68,7 @@ def parse_hhmmss(time_str):
     s = int(time_str[4:6])
     return h * 3600 + m * 60 + s
 
-def run_video(video_path, seg_model=None, road_detector=None, depth_model=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0):
+def run_video(video_path, seg_model=None, road_detector=None, traj_img_size=800, downscale=0.5, fov=None, start_time=None, end_time=None, stop_threshold=1.0, view_mode="global", max_turn_degrees=10.0):
     sequence_name = video_path.split("/")[-1]
     print(f"--- Running on Video: {sequence_name} (Scale: {downscale}) ---")
     
@@ -153,8 +153,6 @@ def run_video(video_path, seg_model=None, road_detector=None, depth_model=None, 
     vo = VisualOdometry(cam, stop_threshold=stop_threshold, max_turn_degrees=max_turn_degrees)
     if seg_model:
         vo.set_segmentation_model(seg_model)
-    if depth_model:
-        vo.set_depth_model(depth_model)
     
     traj_img = np.zeros((traj_img_size, traj_img_size, 3), dtype=np.uint8)
     
@@ -192,12 +190,7 @@ def run_video(video_path, seg_model=None, road_detector=None, depth_model=None, 
             else:
                 display_img = img.copy()
 
-        # Estimate depth if model available
-        depth_map = None
-        if depth_model:
-            depth_map = depth_model.estimate_depth(img)
-
-        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp, depth_map=depth_map)
+        vo.process_frame(i, img_gray, img_color=img, road_vp=road_vp)
         
         estimated_heading = vo.get_heading()
         turn_rate = estimated_heading - last_heading
@@ -364,7 +357,6 @@ def main():
     parser.add_argument("video_path", type=str, help="Path to the input mp4 video file.")
     parser.add_argument("--no_road_detection", action="store_true", help="Disable road area detection.")
     parser.add_argument("--no_segmentation", action="store_true", help="Disable semantic segmentation (faster).")
-    parser.add_argument("--no_depth", action="store_true", help="Disable Depth Anything V2 depth estimation.")
     parser.add_argument("--scale", type=float, default=0.5, help="Downscale factor for processing (default 0.5).")
     parser.add_argument("--fov", type=float, help="Horizontal Field of View (FOV) in degrees (e.g., 90, 120).")
     parser.add_argument("--start", type=str, help="Start timestamp in hhmmss format (e.g., 000130 for 00:01:30)")
@@ -383,22 +375,12 @@ def main():
         except Exception as e:
             print(f"Failed to load DL model: {e}")
             seg_model = None
-    
-    depth_model = None
-    if not args.no_depth:
-        print("Initializing Depth Anything V2 (this may take a moment)...")
-        try:
-            depth_model = DepthAnythingV2()
-        except Exception as e:
-            print(f"Failed to load Depth Anything V2: {e}")
-            depth_model = None
             
     road_detector = None
     if not args.no_road_detection:
         road_detector = RoadAreaDetector()
     
-    run_video(args.video_path, seg_model, road_detector, depth_model, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn)
+    run_video(args.video_path, seg_model, road_detector, downscale=args.scale, fov=args.fov, start_time=args.start, end_time=args.end, stop_threshold=args.stop_threshold, view_mode=args.view_mode, max_turn_degrees=args.max_turn)
 
 if __name__ == "__main__":
     main()
-

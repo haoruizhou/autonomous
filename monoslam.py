@@ -5,63 +5,6 @@ import sys
 from tqdm import tqdm
 import torch
 from torchvision import models, transforms
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
-from PIL import Image
-
-class DepthAnythingV2:
-    """Wrapper for Depth Anything V2 monocular depth estimation."""
-    
-    def __init__(self, model_name="depth-anything/Depth-Anything-V2-Small-hf"):
-        # Note: MPS doesn't support all ops needed by DinoV2 backbone (upsample_bicubic2d)
-        # So we use CUDA if available, otherwise fall back to CPU
-        self.device = torch.device('cpu')
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        # MPS not supported for this model due to missing ops
-        
-        print(f"Loading Depth Anything V2 on {self.device}...")
-        self.image_processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModelForDepthEstimation.from_pretrained(model_name).to(self.device)
-        self.model.eval()
-        print("Depth Anything V2 loaded.")
-        
-    def estimate_depth(self, img_bgr):
-        """
-        Estimate depth from a BGR image.
-        
-        Args:
-            img_bgr: OpenCV BGR image (H, W, 3)
-            
-        Returns:
-            depth_map: numpy array (H, W) with relative depth values (higher = closer)
-        """
-        h, w = img_bgr.shape[:2]
-        
-        # Convert BGR to RGB PIL Image
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(img_rgb)
-        
-        # Preprocess
-        inputs = self.image_processor(images=pil_image, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        
-        # Inference
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            predicted_depth = outputs.predicted_depth
-        
-        # Interpolate to original size
-        prediction = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=(h, w),
-            mode="bicubic",
-            align_corners=False,
-        )
-        
-        # Convert to numpy
-        depth_map = prediction.squeeze().cpu().numpy()
-        
-        return depth_map
 
 class MultiClassSegmentation:
     def __init__(self):
@@ -213,58 +156,13 @@ class VisualOdometry:
         self.detector = cv2.FastFeatureDetector_create(threshold=20, nonmaxSuppression=True)
         self.lk_params = dict(winSize=(15, 15), criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
         self.seg_model = None
-        self.depth_model = None
         self.is_stopped = False
         self.current_flow_mag = 0.0
 
     def set_segmentation_model(self, model):
         self.seg_model = model
 
-    def set_depth_model(self, model):
-        self.depth_model = model
-
-    def _backproject_points(self, points_2d, depth_map):
-        """
-        Backproject 2D points to 3D using depth map and camera intrinsics.
-        
-        Args:
-            points_2d: Nx2 array of 2D points
-            depth_map: HxW depth map
-            
-        Returns:
-            points_3d: Nx3 array of 3D points in camera frame
-        """
-        points_3d = []
-        valid_indices = []
-        
-        for idx, pt in enumerate(points_2d):
-            x, y = int(pt[0]), int(pt[1])
-            
-            # Check bounds
-            if not (0 <= y < depth_map.shape[0] and 0 <= x < depth_map.shape[1]):
-                continue
-                
-            d = depth_map[y, x]
-            
-            # Skip invalid depth (too close or too far)
-            if d <= 0.1 or d > 1000:
-                continue
-            
-            # Backproject: X = (u - cx) * Z / fx, Y = (v - cy) * Z / fy
-            # Depth Anything gives relative depth, so we scale to reasonable range
-            # Invert: higher value = closer in Depth Anything, but we want further = higher Z
-            Z = 100.0 / (d + 1e-6)  # Convert relative to approximate metric
-            Z = np.clip(Z, 1.0, 200.0)  # Reasonable driving distances
-            
-            X = (pt[0] - self.cam.cx) * Z / self.cam.fx
-            Y = (pt[1] - self.cam.cy) * Z / self.cam.fy
-            
-            points_3d.append([X, Y, Z])
-            valid_indices.append(idx)
-        
-        return np.array(points_3d, dtype=np.float64), valid_indices
-
-    def process_frame(self, frame_id, new_frame, img_color=None, road_vp=None, depth_map=None):
+    def process_frame(self, frame_id, new_frame, img_color=None, road_vp=None):
         if self.last_frame is None:
             self.last_frame = new_frame
             self.kp1 = self.detector.detect(new_frame, None)
@@ -297,90 +195,66 @@ class VisualOdometry:
              self.current_flow_mag = 0.0
              return
 
-        # --- POSE ESTIMATION ---
-        R = np.eye(3)
-        t = np.zeros((3, 1))
-        used_pnp = False
+        E, mask = cv2.findEssentialMat(good_new, good_old, self.cam.fx, self.cam.pp, cv2.RANSAC, 0.999, 1.0)
         
-        # Try PnP with depth first (gives proper scale)
-        if depth_map is not None and len(good_old) >= 6:
-            pts_3d, valid_idx = self._backproject_points(good_old, depth_map)
-            
-            if len(pts_3d) >= 6:
-                # Filter 2D points to match valid 3D points
-                pts_2d = good_new[valid_idx].astype(np.float64)
-                
-                # Solve PnP
-                success, rvec, tvec, inliers = cv2.solvePnPRansac(
-                    pts_3d, pts_2d, self.cam.K, None,
-                    iterationsCount=100,
-                    reprojectionError=8.0,
-                    confidence=0.99,
-                    flags=cv2.SOLVEPNP_ITERATIVE
-                )
-                
-                if success and inliers is not None and len(inliers) >= 4:
-                    R, _ = cv2.Rodrigues(rvec)
-                    t = tvec
-                    used_pnp = True
-        
-        # Fallback to Essential Matrix (no scale)
-        if not used_pnp:
-            E, mask = cv2.findEssentialMat(good_new, good_old, self.cam.fx, self.cam.pp, cv2.RANSAC, 0.999, 1.0)
-            
-            if E is not None:
-                _, R, t, mask = cv2.recoverPose(E, good_new, good_old, self.cam.K)
-        
-        # Calculate flow magnitude for stop detection
-        flow_mag = np.mean(np.linalg.norm(good_new - good_old, axis=1))
-        self.current_flow_mag = flow_mag
-        
-        # Calculate rotation angle strength
-        trace = np.trace(R)
-        cos_theta = (trace - 1.0) / 2.0
-        cos_theta = np.clip(cos_theta, -1.0, 1.0)
-        angle_deg = np.degrees(np.arccos(cos_theta))
-        
-        # OUTLIER REJECTION: Sudden "Teleport" Turns
-        if abs(angle_deg) > self.max_turn_degrees:
-            t = np.zeros((3, 1))
-            R = np.eye(3)
-        else:
-            # STOP DETECTION
-            if flow_mag < self.stop_threshold:
-                t = np.zeros((3, 1))
-                R = np.eye(3)
-                self.is_stopped = True
-            else:
-                self.is_stopped = False
-            
-            # --- ROAD FUSION (only if not using PnP) ---
-            if not used_pnp and road_vp is not None:
-                vp_homog = np.array([road_vp[0], road_vp[1], 1.0])
-                t_vp = self.cam.K_inv.dot(vp_homog)
-                t_vp = t_vp / np.linalg.norm(t_vp)
-                t_vp = t_vp.reshape((3, 1))
-                
-                alpha = 0.2
-                if np.dot(t.flatten(), t_vp.flatten()) > 0.7:
-                    t_fused = (1 - alpha) * t + alpha * t_vp
-                    t_fused = t_fused / np.linalg.norm(t_fused)
-                    t = t_fused
-        
-        # Apply pose update
-        if used_pnp:
-            # PnP gives camera pose, so t is already scaled (in world units)
-            # t from PnP is the camera translation, we update directly
-            t_norm = np.linalg.norm(t)
-            if t_norm > 0.01 and t_norm < 50:  # Sanity check on translation magnitude
-                self.cur_t = self.cur_t + self.cur_R.dot(t)
-                self.cur_R = self.cur_R.dot(R)
-        else:
-            # Essential matrix gives unit translation
-            absolute_scale = 1.0
-            if np.sum(t) != 0 and (t[2] > t[0] and t[2] > t[1]):
-                self.cur_t = self.cur_t + absolute_scale * self.cur_R.dot(t)
-                self.cur_R = self.cur_R.dot(R)
+        if E is not None:
+             _, R, t, mask = cv2.recoverPose(E, good_new, good_old, self.cam.K)
+             
+             flow_mag = np.mean(np.linalg.norm(good_new - good_old, axis=1))
+             self.current_flow_mag = flow_mag
+             
+             # Calculate rotation angle strength
+             trace = np.trace(R)
+             # trace = 1 + 2cos(theta) -> cos(theta) = (trace - 1)/2
+             cos_theta = (trace - 1.0) / 2.0
+             cos_theta = np.clip(cos_theta, -1.0, 1.0)
+             angle_deg = np.degrees(np.arccos(cos_theta))
+             
+             # OUTLIER REJECTION: Sudden "Teleport" Turns
+             if abs(angle_deg) > self.max_turn_degrees:
+                 # Reject this update
+                 t = np.zeros((3, 1))
+                 R = np.eye(3)
+                 
+             else:
+                 # STRICTER STOP DETECTION
+                 if flow_mag < self.stop_threshold:  # Use configurable threshold
+                     t = np.zeros((3, 1))
+                     R = np.eye(3)
+                     self.is_stopped = True
+                 else:
+                     self.is_stopped = False
+                 
+                 # --- ROAD FUSION ---
+                 if road_vp is not None:
+                     # road_vp is (u, v)
+                     # Convert to normalized vector
+                     # t_vp = inv(K) * [u, v, 1]
+                     vp_homog = np.array([road_vp[0], road_vp[1], 1.0])
+                     t_vp = self.cam.K_inv.dot(vp_homog)
+                     
+                     # Normalize
+                     t_vp = t_vp / np.linalg.norm(t_vp)
+                     t_vp = t_vp.reshape((3, 1))
+                     
+                     # Blend t from VO and t from Road
+                     # VO t is unit vector. t_vp is unit vector.
+                     # t_vp direction is "Towards the road center".
+                     # If we are driving straight, t ~ t_vp.
+                     # Fusion Factor:
+                     alpha = 0.2 # 20% weight to road direction (gentle bias)
+                     
+                     # Only apply if we are moving roughly fwd (dot product > 0.7)
+                     if np.dot(t.flatten(), t_vp.flatten()) > 0.7:
+                         t_fused = (1 - alpha) * t + alpha * t_vp
+                         t_fused = t_fused / np.linalg.norm(t_fused) # Renormalize
+                         t = t_fused
+                 # -------------------
+              
+             absolute_scale = 1.0 
+             if np.sum(t) != 0 and (t[2] > t[0] and t[2] > t[1]): 
+                 self.cur_t = self.cur_t + absolute_scale * self.cur_R.dot(t)
+                 self.cur_R = self.cur_R.dot(R)
         
         self.traj.append((self.cur_t[0][0], self.cur_t[2][0]))
         self.last_frame = new_frame
