@@ -203,3 +203,8 @@ results_cuda/
 
 # Colab
 colab_droid_pipeline.ipynb
+*.mp4
+
+# YOLO weights and DA3
+*.pt
+Depth-Anything-3/
