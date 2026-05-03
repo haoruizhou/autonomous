@@ -24,8 +24,13 @@ export default function PhotogrammetryMesh({ track }: Props) {
     cloned.scale.z = -1;
     cloned.traverse((child) => {
       if (child instanceof THREE.Mesh) {
+        const name = child.name.toLowerCase();
+        if (name.includes('cone')) {
+          child.visible = false;
+          return;
+        }
         child.receiveShadow = true;
-        child.castShadow = child.name.toLowerCase().includes('cone');
+        child.castShadow = false;
         if (child.material instanceof THREE.MeshPhongMaterial || child.material instanceof THREE.MeshStandardMaterial) {
           child.material.side = THREE.DoubleSide;
         }

@@ -47,6 +47,7 @@ export type SourcePoint = {
 export type LoadedTrack = {
   raw: TrackJson;
   renderRoadCells: TrackCell[];
+  visualRoadFillCells: TrackCell[];
   renderGrassCells: TrackCell[];
   origin: SourcePoint;
   roadSet: Set<string>;
