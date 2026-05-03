@@ -4,10 +4,15 @@ from pathlib import Path
 import numpy as np
 
 
-def render(project_dir: Path, cell_m: float = 0.25, out_name: str = "cloud_topdown.png") -> Path:
+def render(
+    project_dir: Path,
+    cell_m: float = 0.25,
+    out_name: str = "cloud_topdown.png",
+    cloud_name: str = "cloud.npz",
+) -> Path:
     import matplotlib.pyplot as plt
     project_dir = Path(project_dir)
-    d = np.load(project_dir / "cloud.npz")
+    d = np.load(project_dir / cloud_name)
     xyz, cls = d["xyz"], d["cls"]
 
     # Crop to a tight box around the camera path (drops far grandstand returns).
@@ -51,7 +56,7 @@ def render(project_dir: Path, cell_m: float = 0.25, out_name: str = "cloud_topdo
     ax.imshow(img, origin="lower",
               extent=[x0, x0 + W * cell_m, y0, y0 + H * cell_m])
     ax.set_aspect("equal")
-    ax.set_title(f"Labeled cloud top-down — {project_dir.name} ({cell_m} m/cell)")
+    ax.set_title(f"Labeled cloud top-down — {project_dir.name}/{cloud_name} ({cell_m} m/cell)")
     out = project_dir / out_name
     fig.savefig(out, dpi=140, bbox_inches="tight")
     print(f"  {out}")
@@ -63,5 +68,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--project", type=Path, required=True)
     p.add_argument("--cell", type=float, default=0.25)
+    p.add_argument("--cloud", default="cloud.npz")
+    p.add_argument("--out", default="cloud_topdown.png")
     args = p.parse_args()
-    render(args.project, cell_m=args.cell)
+    render(args.project, cell_m=args.cell, out_name=args.out, cloud_name=args.cloud)

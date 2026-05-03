@@ -9,6 +9,8 @@ dependencies = [
     "tqdm>=4.66.0",
     "pillow>=10.0.0",
     "scipy>=1.12.0",
+    "ultralytics>=8.4.46",
+    "clip",
 ]
 
 [build-system]
@@ -17,3 +19,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["segment_video"]
+
+[tool.uv.sources]
+clip = { git = "https://github.com/ultralytics/CLIP.git" }
