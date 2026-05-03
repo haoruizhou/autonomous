@@ -208,3 +208,4 @@ colab_droid_pipeline.ipynb
 # YOLO weights and DA3
 *.pt
 Depth-Anything-3/
+/frontend/node_modules
