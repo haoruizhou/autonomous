@@ -67,6 +67,81 @@ def _camera_centerline(project_dir: Path) -> list[list[float]]:
     return [[round(float(x), 3), round(float(y), 3), round(float(z), 3)] for x, y, z in arr]
 
 
+def _centerline_mask(grid: dict, centerline: list[list[float]], radius_m: float) -> np.ndarray:
+    mask = np.zeros((grid["height"], grid["width"]), dtype=bool)
+    if not centerline:
+        return mask
+    radius_cells = max(1, int(np.ceil(radius_m / grid["cell_m"])))
+    for x, y, _ in centerline:
+        ci = int(np.floor((x - grid["x0"]) / grid["cell_m"]))
+        cj = int(np.floor((y - grid["y0"]) / grid["cell_m"]))
+        for dj in range(-radius_cells, radius_cells + 1):
+            j = cj + dj
+            if j < 0 or j >= grid["height"]:
+                continue
+            for di in range(-radius_cells, radius_cells + 1):
+                i = ci + di
+                if i < 0 or i >= grid["width"]:
+                    continue
+                if np.hypot(di, dj) * grid["cell_m"] <= radius_m:
+                    mask[j, i] = True
+    return mask
+
+
+def _patch_centerline_road_holes(
+    road_mask: np.ndarray,
+    grass_mask: np.ndarray,
+    road_z: np.ndarray,
+    grid: dict,
+    centerline: list[list[float]],
+    radius_m: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    search_r = max(2, int(np.ceil(2.5 / grid["cell_m"])))
+    candidates = _centerline_mask(grid, centerline, radius_m) & ~road_mask & ~grass_mask
+    patched = road_mask.copy()
+    patched_z = road_z.copy()
+    added = 0
+    directions = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+    height_window = max(1, int(np.ceil(1.4 / grid["cell_m"])))
+
+    for j, i in np.argwhere(candidates):
+        road_dirs = 0
+        grass_dirs = 0
+        edge_dirs = 0
+        for di, dj in directions:
+            seen_road = False
+            seen_grass = False
+            hit_edge = False
+            for step in range(1, search_r + 1):
+                ii = i + di * step
+                jj = j + dj * step
+                if ii < 0 or jj < 0 or ii >= grid["width"] or jj >= grid["height"]:
+                    hit_edge = True
+                    break
+                if road_mask[jj, ii]:
+                    seen_road = True
+                    break
+                if grass_mask[jj, ii]:
+                    seen_grass = True
+                    break
+            road_dirs += int(seen_road)
+            grass_dirs += int(seen_grass)
+            edge_dirs += int(hit_edge)
+        if road_dirs < 7 or grass_dirs > 0 or edge_dirs > 0:
+            continue
+        j0, j1 = max(0, j - height_window), min(grid["height"], j + height_window + 1)
+        i0, i1 = max(0, i - height_window), min(grid["width"], i + height_window + 1)
+        nearby_z = road_z[j0:j1, i0:i1][road_mask[j0:j1, i0:i1]]
+        if nearby_z.size == 0:
+            continue
+        patched[j, i] = True
+        patched_z[j, i] = float(np.median(nearby_z))
+        added += 1
+
+    patched_grass = grass_mask & ~patched
+    return patched, patched_grass, patched_z, added
+
+
 def export_track_json(
     project_dir: Path,
     cloud_name: str = "cloud_with_cones.npz",
@@ -90,14 +165,23 @@ def export_track_json(
     grass_count, grass_zsum = _accumulate(grid, grass_xyz)
 
     road_mask = binary_closing(road_count >= 2, structure=np.ones((3, 3), dtype=bool))
-    road_buffer = binary_dilation(road_mask, iterations=max(1, int(round(road_buffer_m / cell_m))))
-    grass_extent = binary_dilation(road_mask, iterations=max(1, int(round(grass_margin_m / cell_m))))
-    grass_mask = grass_extent & ~road_buffer
 
     road_z = np.full((grid["height"], grid["width"]), ground_z, dtype=np.float64)
     np.divide(road_zsum, road_count, out=road_z, where=road_count > 0)
     grass_z = np.full((grid["height"], grid["width"]), ground_z - 0.03, dtype=np.float64)
     np.divide(grass_zsum, grass_count, out=grass_z, where=grass_count > 0)
+
+    centerline_hint = _camera_centerline(project_dir)
+    road_buffer = binary_dilation(road_mask, iterations=max(1, int(round(road_buffer_m / cell_m))))
+    grass_extent = binary_dilation(road_mask, iterations=max(1, int(round(grass_margin_m / cell_m))))
+    grass_mask = grass_extent & ~road_buffer
+    road_mask, grass_mask, road_z, patched_road_holes = _patch_centerline_road_holes(
+        road_mask,
+        grass_mask,
+        road_z,
+        grid,
+        centerline_hint,
+    )
 
     cones_summary = json.loads((project_dir / cones_name).read_text()) if (project_dir / cones_name).exists() else {"cones": []}
     cones = [{
@@ -119,7 +203,7 @@ def export_track_json(
         "road_cells": _cells(road_mask, road_z, max_cells_per_class),
         "grass_cells": _cells(grass_mask, grass_z, max_cells_per_class),
         "cones": cones,
-        "centerline_hint": _camera_centerline(project_dir),
+        "centerline_hint": centerline_hint,
         "counts": {
             "road_cells": int(road_mask.sum()),
             "grass_cells": int(grass_mask.sum()),
@@ -127,13 +211,17 @@ def export_track_json(
             "road_points": int((cls == ROAD).sum()),
             "grass_points": int((cls == GRASS).sum()),
             "cone_points": int((cls == CONE).sum()),
+            "patched_road_holes": patched_road_holes,
         },
     }
 
     out_path = project_dir / out_name
     out_path.write_text(json.dumps(out, separators=(",", ":")))
     print(f"  track JSON: {out_path}")
-    print(f"  road_cells={out['counts']['road_cells']:,} grass_cells={out['counts']['grass_cells']:,} cones={len(cones):,}")
+    print(
+        f"  road_cells={out['counts']['road_cells']:,} grass_cells={out['counts']['grass_cells']:,} "
+        f"cones={len(cones):,} patched_road_holes={patched_road_holes:,}"
+    )
     return out_path
 
 
