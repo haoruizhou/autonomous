@@ -162,14 +162,17 @@ def align_gpx_to_video(
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    t0 = video_creation_time(video_path)
-    if t0 is None:
+    t_end = video_creation_time(video_path)
+    if t_end is None:
         print(f"  [warn] No creation_time for {video_path.name}; skipping GPS alignment.")
         return [None] * n_frames
+    # iPhone/QuickTime convention: container creation_time = end of recording.
+    duration_s = n_frames / fps if fps > 0 else 0.0
+    t0_ts = t_end.timestamp() - duration_s
 
     aligned: list[Optional[dict]] = []
     for fi in range(n_frames):
-        frame_t = t0.timestamp() + fi / fps
+        frame_t = t0_ts + fi / fps
         # Find surrounding GPX samples
         best = None
         for i in range(len(gpx_points) - 1):
