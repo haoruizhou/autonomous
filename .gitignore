@@ -209,3 +209,4 @@ colab_droid_pipeline.ipynb
 *.pt
 Depth-Anything-3/
 /frontend/node_modules
+/.claude
