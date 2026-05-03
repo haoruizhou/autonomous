@@ -35,13 +35,25 @@ feature_process_size: 2048
 sift_peak_threshold: 0.066
 
 matcher_type: FLANN
-matching_gps_distance: 100     # widened to bridge low-feature gaps
-matching_gps_neighbors: 16
-matching_time_neighbors: 8     # always match against +/- 8 temporal neighbors (loop closure)
+matching_gps_distance: 60
+matching_gps_neighbors: 24
+matching_time_neighbors: 12
+matching_use_filters: yes
+lowes_ratio: 0.85
 
-# Bundle adjustment uses GPS as a soft prior (default behaviour).
-# Phone GPS uncertainty: relax so SfM features dominate locally.
+# Looser triangulation/resection so weak-but-real tracks across turns survive.
+robust_matching_threshold: 0.006
+five_point_algo_threshold: 0.006
+triangulation_threshold: 0.006
+min_track_length: 2
+resection_threshold: 0.008
+resection_min_inliers: 8
+
+# Force a single GPS-aligned frame for every reconstruction component.
+align_method: auto
+align_orientation_prior: vertical
 bundle_use_gps: yes
+bundle_compensate_gps_bias: yes
 bundle_outlier_filtering_type: AUTO
 
 # Dense reconstruction.
@@ -207,7 +219,7 @@ if __name__ == "__main__":
     p.add_argument("--gpx", type=Path, required=True)
     p.add_argument("--project", type=Path, required=True,
                    help="Output OpenSfM project directory")
-    p.add_argument("--fps", type=float, default=4.0,
-                   help="Sampling rate in frames/sec (default 4)")
+    p.add_argument("--fps", type=float, default=6.0,
+                   help="Sampling rate in frames/sec (default 6)")
     args = p.parse_args()
     write_project(args.video, args.gpx, args.project, sample_fps=args.fps)

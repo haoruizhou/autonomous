@@ -1,56 +1,160 @@
 """End-to-end orchestrator for pipeline_v2.
 
-Currently scaffolds:
-    Stage A — extract: video + GPX → OpenSfM project layout
-    Stage B — sfm:     OpenSfM via Docker → reconstruction.json + dense cloud
+Stages (in order):
+    A extract   — videos + GPX → OpenSfM project
+    B sfm       — OpenSfM (Docker): features, match, reconstruct, undistort, dense
+    C semantic  — Mask2Former labels for each undistorted component
+    D cloud     — assemble labeled point cloud (cloud.npz)
+    E cones     — YOLO-World cone detection + cluster + stamp into cloud_with_cones.npz
+    F export    — track.json (browser) + track.obj/.mtl (CARLA-ish)
+    G diag      — diagnostic PNGs (z hist, height profile, top-down classes)
+    H sync      — copy track.{json,obj,mtl} into frontend/public/data/
 
-Subsequent stages (semantic projection, cone re-anchoring, OBJ + xodr export)
-will be wired in as they land.
+Designed so a single `--stage all` run can be left running overnight.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
-from pipeline_v2 import extract, sfm
+from pipeline_v2 import cloud, cones, diag, export, export_json, extract, semantic, sfm
+
+_ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "cones", "export", "diag", "sync")
+
+
+def _components(project_dir: Path) -> list[tuple[str, str]]:
+    """Return [(undistorted_subdir, labels_subdir), ...] for whichever recs exist."""
+    pairs: list[tuple[str, str]] = []
+    for undist, lbls in (("undistorted", "labels"), ("undistorted_rec1", "labels_rec1")):
+        if (project_dir / undist / "reconstruction.json").exists() or (project_dir / undist / "images").is_dir():
+            pairs.append((undist, lbls))
+    return pairs
+
+
+def _sync_frontend(project_dir: Path, frontend_dir: Path) -> None:
+    target = frontend_dir / "public" / "data"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("track.json", "track.obj", "track.mtl"):
+        src = project_dir / name
+        if src.exists():
+            shutil.copy2(src, target / name)
+            print(f"  synced {src} → {target / name}")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Photogrammetry-first track reconstruction")
+    p = argparse.ArgumentParser(description="Photogrammetry-first track reconstruction (end-to-end)")
     p.add_argument("--video", type=Path, action="append", required=True,
                    help="Input video (repeatable; use once per clip)")
     p.add_argument("--gpx", type=Path, required=True)
-    p.add_argument("--out", type=Path, required=True,
-                   help="Project / output directory")
-    p.add_argument("--fps", type=float, default=4.0,
-                   help="Frame sampling rate (default 4 fps)")
-    p.add_argument("--stage", choices=["extract", "sfm", "all"], default="all")
+    p.add_argument("--out", type=Path, required=True, help="Project / output directory")
+    p.add_argument("--fps", type=float, default=6.0, help="Frame sampling rate (default 6 fps)")
+    p.add_argument("--stage", choices=(*_ALL_STAGES, "all"), default="all")
+    p.add_argument("--skip", action="append", default=[],
+                   help=f"Stages to skip when --stage all; choices: {_ALL_STAGES}")
     p.add_argument("--no-dense", action="store_true",
                    help="In sfm stage: skip undistort + depthmaps")
     p.add_argument("--docker-image", default="opensfm:ubuntu24")
-    p.add_argument("--docker-platform", default=None,
-                   help="Docker --platform, e.g. linux/amd64 for Rosetta")
+    p.add_argument("--docker-platform", default=None)
+
+    p.add_argument("--cloud-stride", type=int, default=4)
+    p.add_argument("--cloud-max-depth", type=float, default=40.0)
+
+    p.add_argument("--cone-model", default="yolov8s-world.pt")
+    p.add_argument("--cone-conf", type=float, default=0.12)
+    p.add_argument("--cone-cluster-radius", type=float, default=0.75)
+    p.add_argument("--cone-min-observations", type=int, default=2)
+    p.add_argument("--cone-max-depth", type=float, default=45.0)
+
+    p.add_argument("--export-cell", type=float, default=0.35)
+    p.add_argument("--export-grass-margin", type=float, default=12.0)
+    p.add_argument("--export-road-buffer", type=float, default=1.2)
+
+    p.add_argument("--frontend-dir", type=Path, default=Path("frontend"))
     args = p.parse_args()
 
-    project_dir = args.out
+    project_dir: Path = args.out
+    selected = set(_ALL_STAGES) if args.stage == "all" else {args.stage}
+    selected -= set(args.skip)
 
-    if args.stage in ("extract", "all"):
+    def run(stage: str) -> bool:
+        return stage in selected
+
+    if run("extract"):
         print("\n[A] Extract frames + GPS → OpenSfM project")
-        extract.write_project(args.video, args.gpx, project_dir,
-                              sample_fps=args.fps)
+        extract.write_project(args.video, args.gpx, project_dir, sample_fps=args.fps)
 
-    if args.stage in ("sfm", "all"):
+    if run("sfm"):
         print("\n[B] OpenSfM (Docker)")
         stages = list(sfm._DEFAULT_STAGES)
         if args.no_dense:
             stages = [s for s in stages if s not in ("undistort", "compute_depthmaps")]
-        sfm.run_opensfm(project_dir,
-                        image=args.docker_image,
-                        stages=stages,
-                        platform=args.docker_platform)
+        sfm.run_opensfm(project_dir, image=args.docker_image, stages=stages, platform=args.docker_platform)
         for k, v in sfm.collect_outputs(project_dir).items():
             print(f"  {k}: {v} (exists={v.exists()})")
+
+    components = _components(project_dir)
+
+    if run("semantic"):
+        print("\n[C] Semantic labels (Mask2Former-Cityscapes)")
+        if not components:
+            print("  [skip] no undistorted/* found — run sfm first")
+        for undist, lbls in components:
+            print(f"  → {undist} / {lbls}")
+            semantic.label_project(
+                project_dir,
+                images_subdir=f"{undist}/images",
+                out_subdir=lbls,
+            )
+
+    if run("cloud"):
+        print("\n[D] Assemble labeled point cloud")
+        cloud.assemble_project(
+            project_dir,
+            components=tuple(components) if components else (("undistorted", "labels"), ("undistorted_rec1", "labels_rec1")),
+            pixel_stride=args.cloud_stride,
+            max_depth_m=args.cloud_max_depth,
+        )
+
+    if run("cones"):
+        print("\n[E] Cone detection + clustering + stamp")
+        cones.detect_project(
+            project_dir,
+            components=tuple(u for u, _ in components) if components else ("undistorted", "undistorted_rec1"),
+            model_name=args.cone_model,
+            conf=args.cone_conf,
+            cluster_radius_m=args.cone_cluster_radius,
+            min_observations=args.cone_min_observations,
+            max_depth_m=args.cone_max_depth,
+        )
+        cones.stamp_cloud(project_dir)
+
+    if run("export"):
+        print("\n[F] Export track.json + track.obj/.mtl")
+        export_json.export_track_json(
+            project_dir,
+            cell_m=args.export_cell,
+            grass_margin_m=args.export_grass_margin,
+            road_buffer_m=args.export_road_buffer,
+        )
+        try:
+            export.export_obj(project_dir)
+        except Exception as e:
+            print(f"  [warn] export.export_obj failed: {e}")
+
+    if run("diag"):
+        print("\n[G] Diagnostics")
+        try:
+            diag.main(project_dir)
+        except Exception as e:
+            print(f"  [warn] diag failed: {e}")
+
+    if run("sync"):
+        print("\n[H] Sync frontend assets")
+        _sync_frontend(project_dir, args.frontend_dir)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
