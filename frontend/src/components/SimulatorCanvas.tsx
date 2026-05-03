@@ -1,8 +1,10 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import type { ThreeEvent } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
-import type { LoadedTrack } from '../types/track';
+import type { LoadedTrack, TrackCone } from '../types/track';
+import type { EditorTool } from '../types/editor';
 import { buildCellSurfaceGeometry, buildCenterlineGeometry } from '../lib/trackMesh';
 import { sourceToThree, threeToSource } from '../lib/coordinates';
 import {
@@ -23,6 +25,13 @@ type Props = {
   showCenterline: boolean;
   cameraMode: CameraMode;
   onTelemetry: (telemetry: { speed: number; surface: SurfaceType; coneHits: number }) => void;
+  // Editor
+  editMode: boolean;
+  editorTool: EditorTool;
+  editedCones: TrackCone[];
+  onAddCone: (xyz: [number, number, number], type: 'boundary' | 'direction') => void;
+  onRemoveCone: (id: number) => void;
+  onToggleDown: (id: number) => void;
 };
 
 function useKeyboard(onReset: () => void, onCycleCamera: () => void) {
@@ -53,15 +62,15 @@ function useKeyboard(onReset: () => void, onCycleCamera: () => void) {
 
 type VehicleProps = {
   track: LoadedTrack;
+  enabled: boolean;
   vehiclePosRef: React.MutableRefObject<THREE.Vector3>;
   vehicleHeadingRef: React.MutableRefObject<number>;
   onTelemetry: Props['onTelemetry'];
 };
 
-function Vehicle({ track, vehiclePosRef, vehicleHeadingRef, onTelemetry }: VehicleProps) {
+function Vehicle({ track, enabled, vehiclePosRef, vehicleHeadingRef, onTelemetry }: VehicleProps) {
   const mesh = useRef<THREE.Mesh>(null);
   const hitIds = useRef(new Set<number>());
-  // Physics state lives in a ref — no React re-render on every frame.
   const vehicleRef = useRef<VehicleState>(createInitialVehicle(track));
   const telemetryTimer = useRef(0);
 
@@ -78,17 +87,17 @@ function Vehicle({ track, vehiclePosRef, vehicleHeadingRef, onTelemetry }: Vehic
   const input = useKeyboard(handleReset, handleCycleCamera);
 
   useFrame((_, dt) => {
+    if (!enabled) return;
+
     const result = updateVehicle(vehicleRef.current, input.current, track, Math.min(dt, 0.05));
     vehicleRef.current = result.state;
 
-    // Expose position/heading to sibling CameraController via shared refs.
     vehiclePosRef.current.copy(result.state.position);
     vehicleHeadingRef.current = result.state.heading;
 
     const source = threeToSource(result.state.position, track.origin);
     const addedHits = countConeHits(track, source, hitIds.current);
 
-    // Time-based telemetry push (~12 Hz) instead of random sampling.
     telemetryTimer.current += dt;
     if (addedHits > 0 || telemetryTimer.current >= 0.083) {
       telemetryTimer.current = 0;
@@ -133,8 +142,6 @@ function CameraController({ vehiclePosRef, vehicleHeadingRef, cameraMode }: Came
       camera.position.lerp(behindVec.current, 0.12);
       camera.lookAt(pos.x, pos.y + 0.5, pos.z);
     } else if (cameraMode === 'orbit' && prevMode.current === 'follow' && controls) {
-      // First frame in orbit mode: snap the orbit pivot to the vehicle so the
-      // user orbits around the car rather than the world origin.
       const oc = controls as unknown as { target: THREE.Vector3; update: () => void };
       oc.target.copy(pos);
       oc.update();
@@ -146,7 +153,19 @@ function CameraController({ vehiclePosRef, vehicleHeadingRef, cameraMode }: Came
   return null;
 }
 
-function TrackScene({ track, showGrass, showCenterline, cameraMode, onTelemetry }: Props) {
+function TrackScene({
+  track,
+  showGrass,
+  showCenterline,
+  cameraMode,
+  onTelemetry,
+  editMode,
+  editorTool,
+  editedCones,
+  onAddCone,
+  onRemoveCone,
+  onToggleDown,
+}: Props) {
   const vehiclePosRef    = useRef<THREE.Vector3>(new THREE.Vector3());
   const vehicleHeadingRef = useRef<number>(0);
 
@@ -162,10 +181,20 @@ function TrackScene({ track, showGrass, showCenterline, cameraMode, onTelemetry 
     () => buildCenterlineGeometry(track.raw.centerline_hint, track.origin),
     [track],
   );
-  // Memoized to avoid creating + leaking a new Line + Material on every render.
   const centerlineLine = useMemo(
     () => new THREE.Line(centerlineGeometry, new THREE.LineBasicMaterial({ color: '#32c7ff' })),
     [centerlineGeometry],
+  );
+
+  const handleGroundClick = useCallback(
+    (e: ThreeEvent<MouseEvent>) => {
+      if (!editMode) return;
+      if (editorTool !== 'add-boundary' && editorTool !== 'add-direction') return;
+      e.stopPropagation();
+      const src = threeToSource(e.point, track.origin);
+      onAddCone([src.x, src.y, src.z], editorTool === 'add-direction' ? 'direction' : 'boundary');
+    },
+    [editMode, editorTool, onAddCone, track],
   );
 
   return (
@@ -181,10 +210,25 @@ function TrackScene({ track, showGrass, showCenterline, cameraMode, onTelemetry 
           <meshStandardMaterial color="#4c9f55" transparent opacity={0.18} roughness={0.95} side={THREE.DoubleSide} />
         </mesh>
       )}
-      <Cones track={track} />
+
+      {/* Invisible ground plane for cone placement — clicks fall through from cones via stopPropagation */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} visible={false} onClick={handleGroundClick}>
+        <planeGeometry args={[600, 600]} />
+        <meshBasicMaterial />
+      </mesh>
+
+      <Cones
+        track={track}
+        cones={editedCones}
+        editMode={editMode}
+        activeTool={editorTool}
+        onRemove={onRemoveCone}
+        onToggleDown={onToggleDown}
+      />
       {showCenterline && <primitive object={centerlineLine} />}
       <Vehicle
         track={track}
+        enabled={!editMode}
         vehiclePosRef={vehiclePosRef}
         vehicleHeadingRef={vehicleHeadingRef}
         onTelemetry={onTelemetry}

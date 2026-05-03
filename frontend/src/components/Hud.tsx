@@ -9,9 +9,11 @@ type Props = {
   showGrass: boolean;
   showCenterline: boolean;
   cameraMode: CameraMode;
+  editMode: boolean;
   onToggleGrass: () => void;
   onToggleCenterline: () => void;
   onCycleCamera: () => void;
+  onToggleEdit: () => void;
 };
 
 export default function Hud({
@@ -22,9 +24,11 @@ export default function Hud({
   showGrass,
   showCenterline,
   cameraMode,
+  editMode,
   onToggleGrass,
   onToggleCenterline,
   onCycleCamera,
+  onToggleEdit,
 }: Props) {
   const mph = Math.abs(speed * 2.237);
 
@@ -63,12 +67,17 @@ export default function Hud({
         <button onClick={onCycleCamera}>
           {cameraMode === 'follow' ? '⤢ Orbit' : '⤡ Follow'}
         </button>
+        <button className={`edit-mode-btn${editMode ? ' active' : ''}`} onClick={onToggleEdit}>
+          {editMode ? '▶ Simulate' : '✎ Edit Cones'}
+        </button>
       </div>
 
-      <div className="hud-controls">
-        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> · <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> drive</div>
-        <div><kbd>Space</kbd> brake · <kbd>R</kbd> reset · <kbd>C</kbd> camera</div>
-      </div>
+      {!editMode && (
+        <div className="hud-controls">
+          <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> · <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> drive</div>
+          <div><kbd>Space</kbd> brake · <kbd>R</kbd> reset · <kbd>C</kbd> camera</div>
+        </div>
+      )}
     </div>
   );
 }

@@ -8,11 +8,16 @@ export type TrackGrid = {
 
 export type TrackCell = [i: number, j: number, z: number];
 
+export type ConeType = 'boundary' | 'direction';
+
 export type TrackCone = {
   id: number;
   xyz: [number, number, number];
   n_observations: number;
   mean_conf: number;
+  // Fields added by the editor (absent in CV-generated JSON → default to boundary/upright).
+  cone_type?: ConeType;
+  knocked_over?: boolean;
 };
 
 export type TrackJson = {
