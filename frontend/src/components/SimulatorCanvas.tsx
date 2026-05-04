@@ -335,8 +335,8 @@ function TrackScene({
     <>
       <ambientLight intensity={0.65} />
       <directionalLight position={[40, 80, 25]} intensity={1.4} castShadow />
-      {showWorldMesh && <PhotogrammetryMesh track={track} />}
-      <GridMesh track={track} />
+      {/* Synthetic OBJ grid is opaque — it fully covers the Poisson mesh if drawn on top. */}
+      {showWorldMesh ? <PhotogrammetryMesh track={track} /> : <GridMesh track={track} />}
       <mesh geometry={roadGeometry} receiveShadow visible={showCenterline}>
         <meshStandardMaterial color="#5ba9ff" transparent opacity={0.22} roughness={0.92} side={THREE.DoubleSide} />
       </mesh>

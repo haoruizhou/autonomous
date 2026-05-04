@@ -15,11 +15,14 @@ function applyShadowAndSide(root: THREE.Object3D): void {
     if (!(child instanceof THREE.Mesh)) return;
     child.receiveShadow = true;
     child.castShadow = false;
+    const hasVertexColors = !!child.geometry?.attributes?.color;
     const mats = Array.isArray(child.material) ? child.material : [child.material];
     for (const m of mats) {
       m.side = THREE.DoubleSide;
+      if (hasVertexColors && 'vertexColors' in m) {
+        (m as THREE.MeshStandardMaterial).vertexColors = true;
+      }
       if (m instanceof THREE.MeshStandardMaterial || m instanceof THREE.MeshPhysicalMaterial) {
-        m.vertexColors = true;
         m.roughness = Math.max(m.roughness ?? 0.9, 0.88);
         m.metalness = m.metalness ?? 0;
       }

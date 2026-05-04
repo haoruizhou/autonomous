@@ -107,6 +107,11 @@ def build_track_mesh_glb(
 
     v = np.asarray(mesh.vertices, dtype=np.float64)
     f = np.asarray(mesh.triangles, dtype=np.int64)
+    # Align with ``export.export_obj`` / ``GridMesh``: OBJ stores ``v`` as
+    # (enu_x, enu_z, enu_y) so Three.js Y is up. OpenSfM/Open3D use (enu_x, enu_y, enu_z).
+    v = np.column_stack([v[:, 0], v[:, 2], v[:, 1]])
+    f = np.ascontiguousarray(f[:, ::-1])  # odd permutation → flip winding
+
     vc = (np.asarray(mesh.vertex_colors) * 255.0).clip(0, 255).astype(np.uint8)
     rgba = np.column_stack([vc, np.full((len(vc),), 255, dtype=np.uint8)])
 
