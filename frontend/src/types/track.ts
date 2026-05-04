@@ -17,8 +17,16 @@ export type TrackCone = {
   mean_conf: number;
   // Fields added by the editor (absent in CV-generated JSON → default to boundary/upright).
   cone_type?: ConeType;
+  /** Boundary only: tipped on its side. Direction cones are always “lying” by type — do not use this flag for them. */
   knocked_over?: boolean;
+  /** Boundary + knocked: scatter heading. Direction: required heading (lying flat); not a knock state. */
+  yaw?: number;
 };
+
+/** True when this cone is a direction cone (CV / hand-edited JSON may use odd casing). */
+export function isDirectionCone(c: { cone_type?: ConeType }): boolean {
+  return String(c.cone_type ?? 'boundary').trim().toLowerCase() === 'direction';
+}
 
 export type TrackJson = {
   schema: 'autocross-track-v1';

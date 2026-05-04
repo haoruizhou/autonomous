@@ -13,6 +13,15 @@ dependencies = [
     "clip",
 ]
 
+# Open3D has no cp313 wheels yet; install mesh tooling only when needed:
+#   uv sync --extra mesh
+# Use Python 3.10–3.12 for the mesh stage (see pipeline_v2/mesh.py).
+[project.optional-dependencies]
+mesh = [
+    "open3d>=0.18.0",
+    "trimesh>=4.0.0",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

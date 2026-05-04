@@ -7,8 +7,9 @@ Stages (in order):
     D cloud     — assemble labeled point cloud (cloud.npz)
     E cones     — YOLO-World cone detection + cluster + stamp into cloud_with_cones.npz
     F export    — track.json (browser) + track.obj/.mtl (CARLA-ish)
+    F2 mesh     — cloud.npz → vertex-colored track_mesh.glb (+ copy to frontend); needs ``uv sync --extra mesh`` (Py 3.10–3.12)
     G diag      — diagnostic PNGs (z hist, height profile, top-down classes)
-    H sync      — copy track.{json,obj,mtl} into frontend/public/data/
+    H sync      — copy track.{json,obj,mtl,glb} into frontend/public/data/
 
 Designed so a single `--stage all` run can be left running overnight.
 """
@@ -20,8 +21,9 @@ import shutil
 from pathlib import Path
 
 from pipeline_v2 import cloud, cones, diag, export, export_json, extract, semantic, sfm
+from pipeline_v2.mesh import build_track_mesh_glb
 
-_ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "cones", "export", "diag", "sync")
+_ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "cones", "export", "mesh", "diag", "sync")
 
 
 def _components(project_dir: Path) -> list[tuple[str, str]]:
@@ -36,7 +38,7 @@ def _components(project_dir: Path) -> list[tuple[str, str]]:
 def _sync_frontend(project_dir: Path, frontend_dir: Path) -> None:
     target = frontend_dir / "public" / "data"
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("track.json", "track.obj", "track.mtl"):
+    for name in ("track.json", "track.obj", "track.mtl", "track_mesh.glb"):
         src = project_dir / name
         if src.exists():
             shutil.copy2(src, target / name)
@@ -45,9 +47,10 @@ def _sync_frontend(project_dir: Path, frontend_dir: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Photogrammetry-first track reconstruction (end-to-end)")
-    p.add_argument("--video", type=Path, action="append", required=True,
-                   help="Input video (repeatable; use once per clip)")
-    p.add_argument("--gpx", type=Path, required=True)
+    p.add_argument("--video", type=Path, action="append", default=[],
+                   help="Input video (repeatable; use once per clip). Required for extract.")
+    p.add_argument("--gpx", type=Path, default=None,
+                   help="GPX path. Required for extract.")
     p.add_argument("--out", type=Path, required=True, help="Project / output directory")
     p.add_argument("--fps", type=float, default=6.0, help="Frame sampling rate (default 6 fps)")
     p.add_argument("--stage", choices=(*_ALL_STAGES, "all"), default="all")
@@ -71,6 +74,10 @@ def main() -> None:
     p.add_argument("--export-grass-margin", type=float, default=12.0)
     p.add_argument("--export-road-buffer", type=float, default=1.2)
 
+    p.add_argument("--mesh-poisson-depth", type=int, default=9)
+    p.add_argument("--mesh-voxel-m", type=float, default=0.05)
+    p.add_argument("--mesh-target-triangles", type=int, default=200_000)
+
     p.add_argument("--frontend-dir", type=Path, default=Path("frontend"))
     args = p.parse_args()
 
@@ -80,6 +87,9 @@ def main() -> None:
 
     def run(stage: str) -> bool:
         return stage in selected
+
+    if run("extract") and (not args.video or args.gpx is None):
+        p.error("--video (repeat at least once) and --gpx are required when running the extract stage")
 
     if run("extract"):
         print("\n[A] Extract frames + GPS → OpenSfM project")
@@ -142,6 +152,19 @@ def main() -> None:
             export.export_obj(project_dir)
         except Exception as e:
             print(f"  [warn] export.export_obj failed: {e}")
+
+    if run("mesh"):
+        print("\n[F2] Vertex-colored mesh (Poisson) → track_mesh.glb")
+        try:
+            build_track_mesh_glb(
+                project_dir,
+                frontend_dir=args.frontend_dir,
+                poisson_depth=args.mesh_poisson_depth,
+                voxel_m=args.mesh_voxel_m,
+                target_triangles=args.mesh_target_triangles,
+            )
+        except Exception as e:
+            print(f"  [warn] build_track_mesh_glb failed: {e}")
 
     if run("diag"):
         print("\n[G] Diagnostics")

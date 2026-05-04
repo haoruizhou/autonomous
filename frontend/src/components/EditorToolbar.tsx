@@ -11,9 +11,9 @@ type Props = {
 
 const TOOLS: { id: EditorTool; label: string; hint: string }[] = [
   { id: 'add-boundary', label: '+ Boundary', hint: 'Click track surface to place a boundary cone' },
-  { id: 'add-direction', label: '+ Direction', hint: 'Click to place an entrance direction cone (animated)' },
+  { id: 'add-direction', label: '+ Direction', hint: '1st click anchor, 2nd click direction; Esc cancels' },
   { id: 'remove',        label: '✕ Remove',   hint: 'Click a cone to delete it' },
-  { id: 'toggle-down',   label: '⤵ Knock',    hint: 'Click a cone to knock it over / stand it up' },
+  { id: 'toggle-down',   label: '⤵ Knock',    hint: 'Boundary cones only: knock over or stand up (direction cones are not knockable)' },
 ];
 
 export default function EditorToolbar({

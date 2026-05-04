@@ -8,10 +8,12 @@ type Props = {
   coneHits: number;
   showGrass: boolean;
   showCenterline: boolean;
+  showWorldMesh: boolean;
   cameraMode: CameraMode;
   editMode: boolean;
   onToggleGrass: () => void;
   onToggleCenterline: () => void;
+  onToggleWorldMesh: () => void;
   onCycleCamera: () => void;
   onToggleEdit: () => void;
 };
@@ -23,10 +25,12 @@ export default function Hud({
   coneHits,
   showGrass,
   showCenterline,
+  showWorldMesh,
   cameraMode,
   editMode,
   onToggleGrass,
   onToggleCenterline,
+  onToggleWorldMesh,
   onCycleCamera,
   onToggleEdit,
 }: Props) {
@@ -62,6 +66,7 @@ export default function Hud({
       <div className="hud-divider" />
 
       <div className="hud-toggles">
+        <button className={showWorldMesh ? 'active' : ''} onClick={onToggleWorldMesh}>World</button>
         <button className={showGrass ? 'active' : ''} onClick={onToggleGrass}>Grass</button>
         <button className={showCenterline ? 'active' : ''} onClick={onToggleCenterline}>Overlay</button>
         <button onClick={onCycleCamera}>
