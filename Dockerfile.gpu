@@ -1,0 +1,73 @@
+# GPU-accelerated OpenSfM + OpenMVS for dense reconstruction.
+#
+# Inherits prebuilt OpenSfM (with OMP patch) from opensfm:ubuntu24_omp.
+# Adds OpenMVS DensifyPointCloud with CUDA for GPU-accelerated depthmaps.
+#
+# Build: docker build -t opensfm:ubuntu24_cuda -f Dockerfile.gpu .
+# Run:   docker run --rm --gpus all -v <project>:/project opensfm:ubuntu24_cuda bash -lc "..."
+#
+# Target GPU: RTX 3080 (sm_86 / compute capability 8.6)
+# CUDA driver requirement: >= 550.x (driver 591.86 satisfies this)
+
+FROM opensfm:ubuntu24_omp AS sfm_base
+
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS final
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Runtime deps that the copied OpenSfM .so files link against.
+# These are the same packages installed in opensfm:ubuntu24_omp, so versions match.
+RUN apt-get update && apt-get install -y \
+        python3.12 python3.12-dev python3.12-venv \
+        libgoogle-glog0v6t64 libgflags2.2 \
+        libopencv-dev \
+        libceres4t64 libceres-dev \
+        libsuitesparse-dev \
+        libgomp1 \
+        # OpenMVS build + runtime deps
+        libcgal-dev \
+        libboost-all-dev \
+        libpng-dev libjpeg-dev libtiff-dev \
+        libglu1-mesa-dev libglew-dev \
+        libjxl-dev \
+        cmake ninja-build git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy prebuilt OpenSfM Python venv + C++ extensions from the OMP image.
+# Both images are Ubuntu 24.04, so ABI is compatible.
+COPY --from=sfm_base /opt/venv /opt/venv
+COPY --from=sfm_base /source/OpenSfM /source/OpenSfM
+
+# nvcc lives at /usr/local/cuda/bin in the devel image; expose it for cmake and build.
+ENV PATH=/usr/local/cuda/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PYTHONPATH=/source/OpenSfM
+
+# Build OpenMVS with CUDA (MVS module only — no SFM pipeline).
+# VCG and nanoflann are header-only libs required by the MVS core.
+# SFM submodule is disabled: it needs bleeding-edge PoseLib/OpenCV APIs
+# incompatible with Ubuntu 24.04 packages. We only need DensifyPointCloud.
+RUN git clone --depth 1 https://github.com/cdcseacave/VCG /source/VCG \
+ && git clone --depth 1 https://github.com/jlblancoc/nanoflann /source/nanoflann \
+ && cmake -S /source/nanoflann -B /source/nanoflann/build \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DNANOFLANN_BUILD_TESTS=OFF \
+        -DNANOFLANN_BUILD_EXAMPLES=OFF \
+ && cmake --build /source/nanoflann/build --target install \
+ && git clone --depth 1 https://github.com/cdcseacave/openMVS /source/openMVS \
+ && sed -i 's/cv::IMWRITE_JPEGXL_QUALITY/cv::IMWRITE_JPEG_QUALITY/g' /source/openMVS/libs/Common/Types.inl \
+ && sed -i 's|CGAL/AABB_traits_3.h|CGAL/AABB_traits.h|g; s|CGAL/AABB_triangle_primitive_3.h|CGAL/AABB_triangle_primitive.h|g' /source/openMVS/libs/MVS/SceneReconstruct.cpp \
+ && sed -i '/ADD_SUBDIRECTORY(SFM)/d' /source/openMVS/libs/CMakeLists.txt \
+ && sed -i '/ADD_SUBDIRECTORY(CreateStructure)/d; /ADD_SUBDIRECTORY(ExtractKeyframes)/d; /ADD_SUBDIRECTORY(Tests)/d' /source/openMVS/apps/CMakeLists.txt \
+ && cmake -S /source/openMVS -B /source/openMVS/build \
+        -GNinja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DOpenMVS_USE_CUDA=ON \
+        -DCUDA_ARCH_BIN="8.6" \
+        -DVCG_ROOT=/source/VCG \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DOpenMVS_ENABLE_TESTS=OFF \
+        -DOpenMVS_USE_PYTHON=OFF \
+ && ninja -C /source/openMVS/build \
+ && ninja -C /source/openMVS/build install \
+ && rm -rf /source/openMVS /source/VCG /source/nanoflann
+
+WORKDIR /source/OpenSfM

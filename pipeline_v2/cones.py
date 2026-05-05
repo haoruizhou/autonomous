@@ -13,6 +13,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy.spatial import KDTree
 
 OTHER, ROAD, GRASS, CONE, REMOVED = 0, 1, 2, 3, 4
 
@@ -71,6 +72,46 @@ def _detections(model, img_bgr: np.ndarray, conf: float) -> list[dict]:
     return boxes
 
 
+def _detections_batch(model, imgs: list[np.ndarray], conf: float) -> list[list[dict]]:
+    """Run YOLO inference on a batch of images at once.
+
+    Returns a list of detection lists, one per image, in the same format as
+    _detections.  Falls back to one-by-one if batch inference raises an error.
+    """
+    try:
+        results = model(imgs, verbose=False, conf=conf)
+        out = []
+        for res in results:
+            if res.boxes is None:
+                out.append([])
+                continue
+            names = getattr(res, "names", {}) or {}
+            boxes = []
+            for xyxy, score, cls_id in zip(
+                res.boxes.xyxy.cpu().numpy(),
+                res.boxes.conf.cpu().numpy(),
+                res.boxes.cls.cpu().numpy().astype(int),
+            ):
+                x1, y1, x2, y2 = [float(v) for v in xyxy]
+                w, h = x2 - x1, y2 - y1
+                if w <= 0 or h <= 0:
+                    continue
+                boxes.append({
+                    "xyxy": [x1, y1, x2, y2],
+                    "bbox": [int(round(x1)), int(round(y1)), int(round(w)), int(round(h))],
+                    "cx": int(round((x1 + x2) / 2.0)),
+                    "cy": int(round(y2)),
+                    "conf": float(score),
+                    "cls": int(cls_id),
+                    "label": str(names.get(int(cls_id), "traffic cone")),
+                })
+            out.append(boxes)
+        return out
+    except Exception:
+        # Fall back to single-image inference
+        return [_detections(model, img, conf) for img in imgs]
+
+
 def _median_depth(depth: np.ndarray, x: int, y: int, radius: int = 3) -> float:
     H, W = depth.shape
     x0, x1 = max(0, x - radius), min(W, x + radius + 1)
@@ -91,20 +132,27 @@ def _backproject(px: int, py: int, depth_m: float, Kinv: np.ndarray, R: np.ndarr
 
 def _cluster_points(records: list[dict], radius_m: float, min_observations: int) -> list[dict]:
     clusters: list[dict] = []
+    centers_2d: list[list[float]] = []  # parallel to clusters, xy only
+    tree: KDTree | None = None
+
     for rec in sorted(records, key=lambda r: -float(r["conf"])):
         p = np.array(rec["xyz"], dtype=np.float64)
         best_i, best_d = -1, float("inf")
-        for i, cl in enumerate(clusters):
-            d = float(np.linalg.norm(p[:2] - np.array(cl["center"][:2])))
-            if d < best_d:
-                best_i, best_d = i, d
+        if tree is not None:
+            best_d, best_i = tree.query(p[:2], k=1)
+            best_d = float(best_d)
+            best_i = int(best_i)
         if best_i >= 0 and best_d <= radius_m:
             cl = clusters[best_i]
             cl["points"].append(p)
             cl["detections"].append(rec)
             cl["center"] = np.median(np.stack(cl["points"]), axis=0).tolist()
+            centers_2d[best_i] = cl["center"][:2]
+            tree = KDTree(centers_2d)
         else:
             clusters.append({"center": p.tolist(), "points": [p], "detections": [rec]})
+            centers_2d.append(p[:2].tolist())
+            tree = KDTree(centers_2d)
 
     out = []
     for i, cl in enumerate(clusters):
@@ -138,44 +186,70 @@ def detect_component(
     cameras = rec["cameras"]
     model = _load_model(model_name, conf)
 
-    records = []
+    BATCH_SIZE = 8
+
+    # Collect all valid (src_idx, name, shot, img_path, dm_path) tuples first.
+    shot_list = []
     for src_idx, (name, shot) in enumerate(rec["shots"].items()):
         img_path = img_dir / name
         dm_path = dm_dir / f"{name}.clean.npz"
-        if not img_path.exists() or not dm_path.exists():
-            continue
-        img = cv2.imread(str(img_path))
-        if img is None:
-            continue
-        depth = np.load(dm_path)["depth"]
-        Hd, Wd = depth.shape
-        Hi, Wi = img.shape[:2]
-        sx, sy = Wd / Wi, Hd / Hi
-        cam = cameras[shot["camera"]]
-        Kinv = np.linalg.inv(_intrinsics(cam, Wd, Hd))
-        R = _angle_axis_to_R(np.array(shot["rotation"], dtype=np.float64))
-        t = np.array(shot["translation"], dtype=np.float64)
+        if img_path.exists() and dm_path.exists():
+            shot_list.append((src_idx, name, shot, img_path, dm_path))
 
-        for det in _detections(model, img, conf):
-            px = int(round(det["cx"] * sx))
-            py = int(round(det["cy"] * sy))
-            if px < 0 or py < 0 or px >= Wd or py >= Hd:
+    records = []
+    # Process in batches: load images for the batch, run batch inference, then
+    # load depth maps only for shots that had detections.
+    for batch_start in range(0, len(shot_list), BATCH_SIZE):
+        batch = shot_list[batch_start: batch_start + BATCH_SIZE]
+
+        # Load images for the batch.
+        batch_imgs: list[np.ndarray] = []
+        valid_batch: list[tuple] = []  # (src_idx, name, shot, dm_path, img_shape)
+        for src_idx, name, shot, img_path, dm_path in batch:
+            img = cv2.imread(str(img_path))
+            if img is None:
                 continue
-            d = _median_depth(depth, px, py)
-            if d <= 0 or d > max_depth_m:
+            batch_imgs.append(img)
+            valid_batch.append((src_idx, name, shot, dm_path, img.shape[:2]))
+
+        if not batch_imgs:
+            continue
+
+        # Batch YOLO inference.
+        batch_dets = _detections_batch(model, batch_imgs, conf)
+
+        for (src_idx, name, shot, dm_path, (Hi, Wi)), dets in zip(valid_batch, batch_dets):
+            if not dets:
                 continue
-            xyz = _backproject(px, py, d, Kinv, R, t)
-            records.append({
-                "component": undist_subdir,
-                "image": name,
-                "src": int(src_idx),
-                "conf": round(float(det["conf"]), 4),
-                "label": det["label"],
-                "bbox": det["bbox"],
-                "px_depth": [int(px), int(py)],
-                "depth_m": round(float(d), 4),
-                "xyz": [float(v) for v in xyz],
-            })
+            # Load depth map only when there are detections to process.
+            depth = np.load(dm_path)["depth"]
+            Hd, Wd = depth.shape
+            sx, sy = Wd / Wi, Hd / Hi
+            cam = cameras[shot["camera"]]
+            Kinv = np.linalg.inv(_intrinsics(cam, Wd, Hd))
+            R = _angle_axis_to_R(np.array(shot["rotation"], dtype=np.float64))
+            t = np.array(shot["translation"], dtype=np.float64)
+
+            for det in dets:
+                px = int(round(det["cx"] * sx))
+                py = int(round(det["cy"] * sy))
+                if px < 0 or py < 0 or px >= Wd or py >= Hd:
+                    continue
+                d = _median_depth(depth, px, py)
+                if d <= 0 or d > max_depth_m:
+                    continue
+                xyz = _backproject(px, py, d, Kinv, R, t)
+                records.append({
+                    "component": undist_subdir,
+                    "image": name,
+                    "src": int(src_idx),
+                    "conf": round(float(det["conf"]), 4),
+                    "label": det["label"],
+                    "bbox": det["bbox"],
+                    "px_depth": [int(px), int(py)],
+                    "depth_m": round(float(d), 4),
+                    "xyz": [float(v) for v in xyz],
+                })
     print(f"  {undist_subdir}: {len(records)} cone detections with valid depth")
     return records
 

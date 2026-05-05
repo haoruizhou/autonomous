@@ -39,6 +39,17 @@ _DEFAULT_STAGES: Sequence[str] = (
     "compute_depthmaps",
 )
 
+# GPU path: replace compute_depthmaps with export_openmvs; OpenMVS handles depthmaps.
+_GPU_STAGES: Sequence[str] = (
+    "extract_metadata",
+    "detect_features",
+    "match_features",
+    "create_tracks",
+    "reconstruct",
+    "undistort",
+    "export_openmvs",
+)
+
 
 def _have_docker() -> bool:
     return shutil.which("docker") is not None
@@ -76,6 +87,52 @@ def run_opensfm(
     print("  OpenSfM done.")
 
 
+def run_opensfm_gpu(
+    project_dir: Path,
+    image: str = "opensfm:ubuntu24_cuda",
+    stages: Sequence[str] = _GPU_STAGES,
+    cuda_device: int = 0,
+    openmvs_resolution: int = 1,
+) -> None:
+    """Run OpenSfM pipeline with GPU-accelerated depthmaps via OpenMVS.
+
+    OpenSfM runs the usual stages up to export_openmvs, then OpenMVS
+    DensifyPointCloud uses CUDA to produce the dense point cloud at
+    <project>/undistorted/openmvs/scene_dense.ply.
+
+    Args:
+        openmvs_resolution: 0=full, 1=half (default), 2=quarter. Half is
+            sufficient for track-width measurements and runs ~4× faster.
+    """
+    project_dir = Path(project_dir).resolve()
+    if not (project_dir / "images").is_dir():
+        raise FileNotFoundError(f"{project_dir}/images is missing — run extract.py first")
+    if not _have_docker():
+        raise RuntimeError("docker binary not found on PATH")
+
+    sfm_cmds = " && ".join(f"bin/opensfm {s} /project" for s in stages)
+    mvs_scene = "/project/undistorted/openmvs/scene.mvs"
+    mvs_cmd = (
+        f"DensifyPointCloud {mvs_scene}"
+        f" --cuda-device {cuda_device}"
+        f" --number-views-fuse 2"
+        f" --resolution-level {openmvs_resolution}"
+    )
+    full_cmd = f"{sfm_cmds} && {mvs_cmd}"
+
+    docker_cmd = [
+        "docker", "run", "--rm",
+        "--gpus", "all",
+        "-v", f"{project_dir}:/project",
+        "-w", "/source/OpenSfM",
+        image, "bash", "-lc", full_cmd,
+    ]
+    print(f"  Running OpenSfM+OpenMVS (GPU) on {project_dir} …")
+    print(f"  Stages: {' → '.join(stages)} → DensifyPointCloud (CUDA)")
+    subprocess.run(docker_cmd, check=True)
+    print("  OpenSfM+OpenMVS GPU done.")
+
+
 def collect_outputs(project_dir: Path) -> dict:
     """Return paths to the artifacts the rest of the pipeline cares about."""
     project_dir = Path(project_dir)
@@ -85,6 +142,7 @@ def collect_outputs(project_dir: Path) -> dict:
         "undistorted_dir": project_dir / "undistorted",
         "depthmaps_dir": project_dir / "undistorted" / "depthmaps",
         "merged_ply": project_dir / "undistorted" / "depthmaps" / "merged.ply",
+        "openmvs_ply": project_dir / "undistorted" / "openmvs" / "scene_dense.ply",
     }
 
 

@@ -77,18 +77,26 @@ def _emit_grid(
 
     faces = 0
     H, W = occupied.shape
-    for j in range(H - 1):
-        for i in range(W - 1):
-            a = vid.get((j, i))
-            b = vid.get((j, i + 1))
-            c = vid.get((j + 1, i))
-            d = vid.get((j + 1, i + 1))
-            if a and b and c:
-                writer.face(a, b, c)
-                faces += 1
-            if b and d and c:
-                writer.face(b, d, c)
-                faces += 1
+    # Build a dense vertex-id array (0 = absent) for O(1) corner lookups
+    vid_arr = np.zeros((H, W), dtype=np.int64)
+    for (j, i), v in vid.items():
+        vid_arr[j, i] = v
+    # Find all top-left corners of candidate quads in one numpy pass
+    # A quad at (j,i) has corners (j,i), (j,i+1), (j+1,i), (j+1,i+1)
+    a_arr = vid_arr[:H - 1, :W - 1]
+    b_arr = vid_arr[:H - 1, 1:W]
+    c_arr = vid_arr[1:H, :W - 1]
+    d_arr = vid_arr[1:H, 1:W]
+    # Lower-left triangle: a, b, c all present
+    tri1 = np.argwhere((a_arr > 0) & (b_arr > 0) & (c_arr > 0))
+    for j, i in tri1:
+        writer.face(int(a_arr[j, i]), int(b_arr[j, i]), int(c_arr[j, i]))
+        faces += 1
+    # Upper-right triangle: b, d, c all present
+    tri2 = np.argwhere((b_arr > 0) & (d_arr > 0) & (c_arr > 0))
+    for j, i in tri2:
+        writer.face(int(b_arr[j, i]), int(d_arr[j, i]), int(c_arr[j, i]))
+        faces += 1
     return len(vid), faces
 
 

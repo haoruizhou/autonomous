@@ -58,6 +58,8 @@ def main() -> None:
                    help=f"Stages to skip when --stage all; choices: {_ALL_STAGES}")
     p.add_argument("--no-dense", action="store_true",
                    help="In sfm stage: skip undistort + depthmaps")
+    p.add_argument("--gpu", action="store_true",
+                   help="Use GPU-accelerated OpenMVS for dense reconstruction (requires opensfm:ubuntu24_cuda)")
     p.add_argument("--docker-image", default="opensfm:ubuntu24")
     p.add_argument("--docker-platform", default=None)
 
@@ -97,10 +99,14 @@ def main() -> None:
 
     if run("sfm"):
         print("\n[B] OpenSfM (Docker)")
-        stages = list(sfm._DEFAULT_STAGES)
-        if args.no_dense:
-            stages = [s for s in stages if s not in ("undistort", "compute_depthmaps")]
-        sfm.run_opensfm(project_dir, image=args.docker_image, stages=stages, platform=args.docker_platform)
+        if args.gpu:
+            gpu_image = args.docker_image if args.docker_image != "opensfm:ubuntu24" else "opensfm:ubuntu24_cuda"
+            sfm.run_opensfm_gpu(project_dir, image=gpu_image)
+        else:
+            stages = list(sfm._DEFAULT_STAGES)
+            if args.no_dense:
+                stages = [s for s in stages if s not in ("undistort", "compute_depthmaps")]
+            sfm.run_opensfm(project_dir, image=args.docker_image, stages=stages, platform=args.docker_platform)
         for k, v in sfm.collect_outputs(project_dir).items():
             print(f"  {k}: {v} (exists={v.exists()})")
 

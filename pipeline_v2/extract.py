@@ -13,6 +13,7 @@ so the trajectory output is GPS-anchored without a separate Procrustes step.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -27,7 +28,9 @@ from track_pipeline import (
 )
 
 
-DEFAULT_OPENSFM_CONFIG = """\
+_PROCESSES = max(1, os.cpu_count() - 1)
+
+DEFAULT_OPENSFM_CONFIG = f"""\
 # Tuned for monocular phone walk-through with consumer GPS.
 feature_type: SIFT
 feature_min_frames: 2000
@@ -57,7 +60,7 @@ bundle_compensate_gps_bias: yes
 bundle_outlier_filtering_type: AUTO
 
 # Dense reconstruction.
-processes: 12
+processes: {_PROCESSES}
 depthmap_method: PATCH_MATCH_SAMPLE
 depthmap_resolution: 640
 depthmap_num_neighbors: 6

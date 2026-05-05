@@ -72,19 +72,18 @@ def _centerline_mask(grid: dict, centerline: list[list[float]], radius_m: float)
     if not centerline:
         return mask
     radius_cells = max(1, int(np.ceil(radius_m / grid["cell_m"])))
+    # Mark each centerline point as a single cell in a sparse boolean grid
     for x, y, _ in centerline:
         ci = int(np.floor((x - grid["x0"]) / grid["cell_m"]))
         cj = int(np.floor((y - grid["y0"]) / grid["cell_m"]))
-        for dj in range(-radius_cells, radius_cells + 1):
-            j = cj + dj
-            if j < 0 or j >= grid["height"]:
-                continue
-            for di in range(-radius_cells, radius_cells + 1):
-                i = ci + di
-                if i < 0 or i >= grid["width"]:
-                    continue
-                if np.hypot(di, dj) * grid["cell_m"] <= radius_m:
-                    mask[j, i] = True
+        if 0 <= ci < grid["width"] and 0 <= cj < grid["height"]:
+            mask[cj, ci] = True
+    # Build a disk-shaped structuring element that matches the original radius check
+    r = radius_cells
+    coords = np.arange(-r, r + 1)
+    di, dj = np.meshgrid(coords, coords)
+    disk = np.hypot(di, dj) * grid["cell_m"] <= radius_m
+    mask = binary_dilation(mask, structure=disk)
     return mask
 
 

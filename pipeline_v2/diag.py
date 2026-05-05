@@ -15,6 +15,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+try:
+    import pandas as _pd
+    _HAS_PANDAS = True
+except ImportError:
+    _HAS_PANDAS = False
+
 ROAD, GRASS, CONE = 1, 2, 3
 
 
@@ -33,12 +39,20 @@ def _rasterize_z(xyz: np.ndarray, cell_m: float, x0: float, y0: float, W: int, H
     ix, iy, z = ix[valid], iy[valid], xyz[valid, 2]
     img = np.full((H, W), np.nan, dtype=np.float32)
     if agg == "median":
-        order = np.lexsort((z, iy, ix))
-        ix_s, iy_s, z_s = ix[order], iy[order], z[order]
-        keys = ix_s.astype(np.int64) * (H + 1) + iy_s.astype(np.int64)
-        starts = np.r_[0, np.where(np.diff(keys) != 0)[0] + 1, len(keys)]
-        for s, e in zip(starts[:-1], starts[1:]):
-            img[iy_s[s], ix_s[s]] = float(np.median(z_s[s:e]))
+        if _HAS_PANDAS:
+            import pandas as pd
+            df = pd.DataFrame({"ix": ix, "iy": iy, "z": z})
+            med = df.groupby(["ix", "iy"])["z"].median()
+            for (xi, yi), zval in med.items():
+                img[yi, xi] = zval
+        else:
+            # Fallback: sorted-group approach
+            order = np.lexsort((z, iy, ix))
+            ix_s, iy_s, z_s = ix[order], iy[order], z[order]
+            keys = ix_s.astype(np.int64) * (H + 1) + iy_s.astype(np.int64)
+            starts = np.r_[0, np.where(np.diff(keys) != 0)[0] + 1, len(keys)]
+            for s, e in zip(starts[:-1], starts[1:]):
+                img[iy_s[s], ix_s[s]] = float(np.median(z_s[s:e]))
     return img
 
 
@@ -206,11 +220,20 @@ def _centerline_height_profile(track_path: Path, project_dir: Path, out: Path) -
         cy = np.array([c["xyz"][1] for c in cones])
         cz = np.array([c["xyz"][2] for c in cones])
         nearest = []
-        for x, y, z in zip(cx, cy, cz):
-            d2 = (centerline[:, 0] - x) ** 2 + (centerline[:, 1] - y) ** 2
-            k = int(np.argmin(d2))
-            if d2[k] < 4.0 ** 2:
-                nearest.append((seg[k], z))
+        try:
+            from scipy.spatial import KDTree
+            tree = KDTree(centerline[:, :2])
+            dists, ids = tree.query(np.column_stack([cx, cy]), k=1)
+            mask = dists < 4.0
+            for idx in np.where(mask)[0]:
+                nearest.append((seg[ids[idx]], cz[idx]))
+        except Exception:
+            # Fallback: brute-force search
+            for x, y, z in zip(cx, cy, cz):
+                d2 = (centerline[:, 0] - x) ** 2 + (centerline[:, 1] - y) ** 2
+                k = int(np.argmin(d2))
+                if d2[k] < 4.0 ** 2:
+                    nearest.append((seg[k], z))
         if nearest:
             ns, nz = zip(*nearest)
             ax.scatter(ns, nz, s=14, c="#ff8c00", edgecolors="black", linewidths=0.3, label="cones (nearest centerline)")

@@ -29,6 +29,7 @@ from typing import Iterable, Optional
 
 import cv2
 import numpy as np
+from PIL import Image
 
 OTHER, ROAD, GRASS, CONE, REMOVED = 0, 1, 2, 3, 4
 
@@ -94,6 +95,60 @@ def label_image(model, processor, device, frame_bgr: np.ndarray) -> np.ndarray:
     return _cityscapes_to_project(pred)
 
 
+def label_images_batch(
+    model, processor, device, frames_bgr: list, batch_size: int = 8
+) -> list:
+    """Process multiple frames in batched GPU forward passes.
+
+    Returns a list of HxW uint8 numpy arrays (project class ids), one per input frame.
+    Falls back to single-image processing per frame if a batch fails (e.g. OOM).
+    """
+    import torch
+
+    results: list = [None] * len(frames_bgr)
+
+    # Build (index, PIL image, (H, W)) tuples for all frames.
+    items = []
+    for i, frame_bgr in enumerate(frames_bgr):
+        h, w = frame_bgr.shape[:2]
+        pil = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+        items.append((i, pil, (h, w)))
+
+    # Process in chunks of batch_size.
+    for chunk_start in range(0, len(items), batch_size):
+        chunk = items[chunk_start: chunk_start + batch_size]
+        indices = [c[0] for c in chunk]
+        pil_images = [c[1] for c in chunk]
+        target_sizes = [c[2] for c in chunk]
+
+        try:
+            inputs = processor(images=pil_images, return_tensors="pt", padding=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            with torch.no_grad():
+                outputs = model(**inputs)
+            preds = processor.post_process_semantic_segmentation(
+                outputs, target_sizes=target_sizes
+            )
+            for idx, pred in zip(indices, preds):
+                arr = pred.cpu().numpy().astype(np.int16)
+                results[idx] = _cityscapes_to_project(arr)
+
+        except RuntimeError as exc:
+            # Likely OOM — fall back to single-image processing for this chunk.
+            print(f"  [warn] batch inference failed ({exc}); falling back to single-image for chunk")
+            for orig_idx, pil_img, (h, w) in chunk:
+                frame_bgr = frames_bgr[orig_idx]
+                try:
+                    results[orig_idx] = label_image(model, processor, device, frame_bgr)
+                except Exception as inner_exc:
+                    print(f"  [warn] single-image fallback also failed for frame {orig_idx}: {inner_exc}")
+                    results[orig_idx] = np.zeros(
+                        (frame_bgr.shape[0], frame_bgr.shape[1]), dtype=np.uint8
+                    )
+
+    return results
+
+
 def colorise(label_map: np.ndarray) -> np.ndarray:
     out = np.zeros((*label_map.shape, 3), dtype=np.uint8)
     for cid, color in _VIS.items():
@@ -108,6 +163,7 @@ def label_project(
     model_name: str = _DEFAULT_MODEL,
     image_names: Optional[Iterable[str]] = None,
     save_vis: bool = True,
+    batch_size: int = 8,
 ) -> dict:
     """Label every undistorted image in the project. Skips files that already exist."""
     project_dir = Path(project_dir)
@@ -127,6 +183,11 @@ def label_project(
     image_names = list(image_names)
 
     summary = {"n_images": len(image_names), "n_labelled": 0, "skipped": 0}
+
+    # Collect unprocessed images into a batch list, preserving stems for saving.
+    pending_names: list[str] = []
+    pending_frames: list[np.ndarray] = []
+
     for name in image_names:
         stem = Path(name).stem
         out_npy = out_dir / f"{stem}.npy"
@@ -136,13 +197,25 @@ def label_project(
         frame_bgr = cv2.imread(str(img_dir / name))
         if frame_bgr is None:
             continue
-        label = label_image(model, processor, device, frame_bgr)
-        np.save(str(out_npy), label)
-        if save_vis:
-            cv2.imwrite(str(out_dir / f"{stem}_vis.png"), colorise(label))
-        summary["n_labelled"] += 1
-        if summary["n_labelled"] % 20 == 0:
-            print(f"    {summary['n_labelled']}/{len(image_names)} labelled")
+        pending_names.append(name)
+        pending_frames.append(frame_bgr)
+
+    # Process all pending frames in batches.
+    for batch_start in range(0, len(pending_frames), batch_size):
+        batch_names = pending_names[batch_start: batch_start + batch_size]
+        batch_frames = pending_frames[batch_start: batch_start + batch_size]
+
+        labels = label_images_batch(model, processor, device, batch_frames, batch_size=batch_size)
+
+        for name, label in zip(batch_names, labels):
+            stem = Path(name).stem
+            out_npy = out_dir / f"{stem}.npy"
+            np.save(str(out_npy), label)
+            if save_vis:
+                cv2.imwrite(str(out_dir / f"{stem}_vis.png"), colorise(label))
+            summary["n_labelled"] += 1
+            if summary["n_labelled"] % 20 == 0:
+                print(f"    {summary['n_labelled']}/{len(image_names)} labelled")
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"  Labels written to {out_dir} "

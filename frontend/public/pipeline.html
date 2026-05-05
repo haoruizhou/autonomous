@@ -3,551 +3,488 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Autocross Track Reconstruction — Pipeline</title>
+  <title>Autocross Track Reconstruction — Pipeline v2</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg: #0a0a0f;
-      --surface: #111118;
-      --border: #1e1e2e;
-      --accent: #6c63ff;
-      --accent2: #ff6584;
-      --green: #43d9ad;
-      --orange: #ff9640;
-      --text: #e2e8f0;
-      --muted: #64748b;
-      --card-bg: #13131c;
+      --bg: #0a0a0f; --surface: #111118; --border: #1e1e2e;
+      --accent: #6c63ff; --green: #43d9ad; --orange: #ff9640;
+      --text: #e2e8f0; --muted: #64748b; --card-bg: #13131c;
+      --pink: #ff6584; --blue: #38bdf8; --teal: #14b8a6; --purple: #a78bfa;
     }
-
     html { scroll-behavior: smooth; }
-
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-      min-height: 100vh;
-      overflow-x: hidden;
-    }
+    body { background: var(--bg); color: var(--text); font-family: 'Inter','Segoe UI',system-ui,sans-serif; min-height: 100vh; }
 
     /* ── Header ── */
-    header {
-      text-align: center;
-      padding: 64px 24px 48px;
-      position: relative;
-    }
-    header::after {
-      content: '';
-      display: block;
-      width: 120px;
-      height: 3px;
-      background: linear-gradient(90deg, var(--accent), var(--green));
-      margin: 24px auto 0;
-      border-radius: 2px;
-    }
-    .header-label {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 4px;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 12px;
-    }
-    h1 {
-      font-size: clamp(28px, 5vw, 52px);
-      font-weight: 800;
-      letter-spacing: -1px;
-      line-height: 1.1;
-      background: linear-gradient(135deg, #fff 30%, var(--accent) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .subtitle {
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 15px;
-      max-width: 560px;
-      margin-inline: auto;
-      line-height: 1.6;
-    }
+    header { text-align: center; padding: 60px 24px 40px; }
+    header::after { content: ''; display: block; width: 120px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--green)); margin: 20px auto 0; border-radius: 2px; }
+    .header-label { font-size: 11px; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+    h1 { font-size: clamp(28px,5vw,50px); font-weight: 800; letter-spacing: -1px; line-height: 1.1; background: linear-gradient(135deg,#fff 30%,var(--accent) 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+    .subtitle { margin-top: 12px; color: var(--muted); font-size: 14px; max-width: 540px; margin-inline: auto; line-height: 1.6; }
 
     /* ── Pipeline container ── */
-    .pipeline {
-      max-width: 900px;
-      margin: 0 auto;
-      padding: 0 24px 100px;
-      position: relative;
-    }
-
-    /* vertical spine */
-    .pipeline::before {
-      content: '';
-      position: absolute;
-      left: 50%;
-      top: 0;
-      bottom: 0;
-      width: 2px;
-      background: linear-gradient(180deg, var(--accent) 0%, var(--green) 60%, transparent 100%);
-      transform: translateX(-50%);
-      opacity: 0.25;
-    }
+    .pipeline { max-width: 1000px; margin: 0 auto; padding: 0 24px 100px; }
 
     /* ── Step card ── */
-    .step {
-      display: grid;
-      grid-template-columns: 1fr 64px 1fr;
-      gap: 0 16px;
-      margin-bottom: 56px;
-      position: relative;
-    }
+    .step { display: grid; grid-template-columns: 60px 1fr 300px; gap: 0 20px; margin-bottom: 36px; align-items: start; }
 
-    /* alternating left/right */
-    .step:nth-child(even) .step-content  { order: 3; }
-    .step:nth-child(even) .step-node     { order: 2; }
-    .step:nth-child(even) .step-image    { order: 1; }
-    .step:nth-child(even) .step-content  { text-align: left; }
-
-    .step:nth-child(odd) .step-content  { order: 1; text-align: right; }
-    .step:nth-child(odd) .step-node     { order: 2; }
-    .step:nth-child(odd) .step-image    { order: 3; }
-
-    /* ── Node (center circle) ── */
-    .step-node {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0;
-      z-index: 2;
-    }
-    .node-circle {
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      border: 2px solid;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 1px;
-      flex-shrink: 0;
-      position: relative;
-    }
-    .node-circle::before {
-      content: '';
-      position: absolute;
-      inset: -6px;
-      border-radius: 50%;
-      opacity: 0.15;
-      background: currentColor;
-    }
+    /* ── Node (left circle) ── */
+    .step-node { display: flex; flex-direction: column; align-items: center; padding-top: 4px; }
+    .node-circle { width: 52px; height: 52px; border-radius: 50%; border: 2px solid; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 9px; font-weight: 800; letter-spacing: 0.5px; line-height: 1.1; gap: 1px; }
+    .node-letter { font-size: 18px; font-weight: 900; }
+    .node-label  { font-size: 8px; font-weight: 600; opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; }
+    .step-node::after { content: ''; display: block; width: 2px; flex: 1; min-height: 20px; margin-top: 8px; opacity: 0.15; }
+    .step:last-child .step-node::after { display: none; }
 
     /* ── Content side ── */
-    .step-content {
-      padding-top: 6px;
-      align-self: start;
-    }
-    .step-letter {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .step-title {
-      font-size: 20px;
-      font-weight: 700;
-      margin-bottom: 6px;
-      line-height: 1.2;
-    }
-    .step-model {
-      display: inline-block;
-      font-size: 11px;
-      font-weight: 600;
-      padding: 2px 10px;
-      border-radius: 20px;
-      margin-bottom: 8px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-    }
-    .step-desc {
-      font-size: 13px;
-      color: var(--muted);
-      line-height: 1.6;
-    }
-    .step-output {
-      margin-top: 8px;
-      font-size: 11px;
-      color: var(--green);
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      opacity: 0.85;
-    }
-
-    /* ── Image panel ── */
-    .step-image {
-      align-self: start;
-      position: relative;
-    }
-    .img-wrap {
-      border-radius: 10px;
-      overflow: hidden;
-      border: 1px solid var(--border);
-      background: var(--card-bg);
-      position: relative;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      transition: transform 0.2s, box-shadow 0.2s;
-    }
-    .img-wrap:hover {
-      transform: scale(1.02);
-      box-shadow: 0 16px 48px rgba(0,0,0,0.7);
-    }
-    .img-wrap img {
-      width: 100%;
-      height: auto;
-      display: block;
-    }
-    .img-caption {
-      font-size: 10px;
-      text-align: center;
-      color: var(--muted);
-      margin-top: 6px;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-    }
-
-    /* glow accent on image border */
-    .img-glow-purple { border-color: rgba(108,99,255,0.4); box-shadow: 0 8px 32px rgba(108,99,255,0.2); }
-    .img-glow-green  { border-color: rgba(67,217,173,0.4); box-shadow: 0 8px 32px rgba(67,217,173,0.2); }
-    .img-glow-orange { border-color: rgba(255,150,64,0.4); box-shadow: 0 8px 32px rgba(255,150,64,0.2); }
-    .img-glow-pink   { border-color: rgba(255,101,132,0.4); box-shadow: 0 8px 32px rgba(255,101,132,0.2); }
-    .img-glow-blue   { border-color: rgba(56,189,248,0.4); box-shadow: 0 8px 32px rgba(56,189,248,0.2); }
-
-    /* ── Arrow connector between steps ── */
-    .connector {
-      display: flex;
-      justify-content: center;
-      margin: -20px 0 -20px;
-      position: relative;
-      z-index: 3;
-    }
-    .connector-arrow {
-      width: 24px;
-      height: 24px;
-      color: var(--muted);
-      opacity: 0.5;
-    }
-
-    /* ── Stats bar ── */
-    .stats-bar {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 10px;
-    }
-    .stat {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 11px;
-      color: var(--text);
-    }
+    .step-content { padding-top: 4px; }
+    .step-title { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+    .step-model { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; margin-bottom: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }
+    .gpu-badge { background: linear-gradient(135deg,var(--pink),var(--orange)); border: none; color: #fff; font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 10px; letter-spacing: 0.5px; }
+    .step-desc { font-size: 13px; color: var(--muted); line-height: 1.7; }
+    .step-desc code { background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 4px; font-size: 11px; color: var(--green); }
+    .step-output { margin-top: 10px; font-size: 11px; color: var(--green); font-family: 'SF Mono','Fira Code',monospace; opacity: 0.85; }
+    .step-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .stat { background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; font-size: 11px; }
     .stat span { color: var(--muted); }
 
-    /* ── Final result highlight ── */
-    .result-card {
-      max-width: 900px;
-      margin: 0 auto 80px;
-      padding: 0 24px;
-    }
-    .result-inner {
-      border-radius: 16px;
-      border: 1px solid rgba(108,99,255,0.3);
-      background: linear-gradient(135deg, rgba(108,99,255,0.08), rgba(67,217,173,0.05));
-      padding: 40px;
-      text-align: center;
-    }
-    .result-inner h2 {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 8px;
-      background: linear-gradient(135deg, var(--accent), var(--green));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .result-inner p { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
-    .result-link {
-      display: inline-block;
-      background: linear-gradient(135deg, var(--accent), var(--green));
-      color: #fff;
-      font-weight: 700;
-      font-size: 14px;
-      padding: 12px 32px;
-      border-radius: 8px;
-      text-decoration: none;
-      transition: opacity 0.2s, transform 0.2s;
-    }
-    .result-link:hover { opacity: 0.85; transform: translateY(-1px); }
+    /* ── Image panel ── */
+    .step-image { align-self: start; }
+    .img-wrap { border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: var(--card-bg); box-shadow: 0 8px 32px rgba(0,0,0,0.5); transition: transform 0.2s, box-shadow 0.2s; }
+    .img-wrap:hover { transform: scale(1.02); box-shadow: 0 16px 48px rgba(0,0,0,0.7); }
+    .img-wrap img { width: 100%; height: auto; display: block; }
+    .img-caption { font-size: 10px; text-align: center; color: var(--muted); margin-top: 6px; font-family: 'SF Mono','Fira Code',monospace; }
+    .img-glow-purple { border-color: rgba(108,99,255,0.4); box-shadow: 0 8px 32px rgba(108,99,255,0.2); }
+    .img-glow-green  { border-color: rgba(67,217,173,0.4);  box-shadow: 0 8px 32px rgba(67,217,173,0.2); }
+    .img-glow-orange { border-color: rgba(255,150,64,0.4);  box-shadow: 0 8px 32px rgba(255,150,64,0.2); }
+    .img-glow-blue   { border-color: rgba(56,189,248,0.4);  box-shadow: 0 8px 32px rgba(56,189,248,0.2); }
+    .img-glow-pink   { border-color: rgba(255,101,132,0.4); box-shadow: 0 8px 32px rgba(255,101,132,0.2); }
+    .img-glow-teal   { border-color: rgba(20,184,166,0.4);  box-shadow: 0 8px 32px rgba(20,184,166,0.2); }
+    .img-glow-purple2{ border-color: rgba(167,139,250,0.4); box-shadow: 0 8px 32px rgba(167,139,250,0.2); }
+
+    /* ── Section divider ── */
+    .section-divider { max-width: 1000px; margin: 8px auto 20px; padding: 0; display: flex; align-items: center; gap: 12px; }
+    .section-divider-line { flex: 1; height: 1px; background: var(--border); }
+    .section-divider-label { font-size: 10px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+
+    /* ── 3-col image grid for sub-steps ── */
+    .step-images-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .step-images-grid .img-wrap { border-radius: 8px; }
+    .step-images-grid .img-caption { font-size: 9px; }
+    .step-images-grid img { width: 100%; height: 90px; object-fit: cover; display: block; }
+
+    /* ── Result card ── */
+    .result-card { max-width: 1000px; margin: 0 auto 80px; padding: 0 24px; }
+    .result-inner { border-radius: 16px; border: 1px solid rgba(108,99,255,0.3); background: linear-gradient(135deg,rgba(108,99,255,0.08),rgba(67,217,173,0.05)); padding: 40px; text-align: center; }
+    .result-inner h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; background: linear-gradient(135deg,var(--accent),var(--green)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+    .result-inner p { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+    .result-link { display: inline-block; background: linear-gradient(135deg,var(--accent),var(--green)); color: #fff; font-weight: 700; font-size: 14px; padding: 12px 32px; border-radius: 8px; text-decoration: none; }
 
     /* ── Responsive ── */
-    @media (max-width: 680px) {
-      .pipeline::before { left: 28px; }
-      .step {
-        grid-template-columns: 56px 1fr;
-        grid-template-rows: auto auto;
-        gap: 0 12px;
-      }
-      .step:nth-child(n) .step-node    { order: 1; }
-      .step:nth-child(n) .step-content { order: 2; text-align: left !important; }
-      .step:nth-child(n) .step-image   { order: 3; grid-column: 1 / -1; margin-top: 16px; }
+    @media (max-width: 720px) {
+      .step { grid-template-columns: 52px 1fr; }
+      .step-image { display: none; }
     }
   </style>
 </head>
 <body>
 
 <header>
-  <div class="header-label">GeoMate · Autocross Pipeline</div>
-  <h1>Track Reconstruction<br>Pipeline</h1>
+  <div class="header-label">GeoMate · Pipeline v2</div>
+  <h1>Track Reconstruction Pipeline</h1>
   <p class="subtitle">
-    How raw dashcam footage becomes a measured 3-D autocross track —
-    step by step, model by model.
+    Two dashcam clips → 310 measured cone positions + driveable 3-D track.
+    CPU or GPU path, three cloud assembly modes, browser simulator.
   </p>
 </header>
 
 <div class="pipeline">
 
-  <!-- ── A: Extract ── -->
+  <!-- ═══════════════════ INPUTS ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Input</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- A: Extract -->
   <div class="step">
+    <div class="step-node">
+      <div class="node-circle" style="color:#6c63ff; border-color:#6c63ff">
+        <span class="node-letter">A</span><span class="node-label">extract</span>
+      </div>
+    </div>
     <div class="step-content">
-      <div class="step-letter">Stage A</div>
-      <div class="step-title">Frame Extraction<br>+ GPS Sync</div>
+      <div class="step-title">Frame Extraction + GPS Sync</div>
       <div class="step-model" style="color:#6c63ff">ffmpeg · gpxpy</div>
       <div class="step-desc">
-        Two dashcam videos (NH1, NH2) are sampled at 6 fps.
-        GPS coordinates from the GPX track are interpolated per frame
-        and written as EXIF overrides into each image's metadata.
+        Two dashcam videos (NH1, NH2) are sampled at the target fps.
+        GPS coordinates from the GPX track are linearly interpolated per frame
+        and injected as EXIF overrides into each image's metadata — these
+        anchor the 3-D reconstruction to real-world ENU coordinates.
       </div>
-      <div class="stats-bar">
+      <div class="step-stats">
         <div class="stat">6 <span>fps</span></div>
         <div class="stat">~2,800 <span>frames</span></div>
         <div class="stat">2 <span>video clips</span></div>
       </div>
       <div class="step-output">→ images/ · exif_overrides.json · config.yaml</div>
     </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#6c63ff; border-color:#6c63ff">A</div>
-    </div>
     <div class="step-image">
       <div class="img-wrap img-glow-purple">
-        <img src="pipeline/01_raw_frame.jpg" alt="Raw video frame showing autocross track" loading="lazy" />
+        <img src="pipeline/01_raw_frame.jpg" alt="Raw dashcam frame" loading="lazy" />
       </div>
-      <div class="img-caption">Raw dashcam frame — NH1_000667</div>
+      <div class="img-caption">Raw dashcam frame — the input to the entire pipeline</div>
     </div>
   </div>
 
-  <!-- ── B: SfM ── -->
+  <!-- ═══════════════════ STRUCTURE ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Structure — OpenSfM (Docker)</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- B: SfM (3 sub-steps) -->
   <div class="step">
-    <div class="step-content">
-      <div class="step-letter">Stage B</div>
-      <div class="step-title">Structure from<br>Motion (SfM)</div>
-      <div class="step-model" style="color:#43d9ad">OpenSfM · HAHOG features · GPS priors</div>
-      <div class="step-desc">
-        OpenSfM extracts keypoints from every frame, matches overlapping
-        pairs, then incrementally reconstructs camera poses and a
-        sparse 3-D point cloud. GPS priors anchor the scene to real-world
-        coordinates. Undistortion and multi-view depth maps follow.
+    <div class="step-node">
+      <div class="node-circle" style="color:#43d9ad; border-color:#43d9ad">
+        <span class="node-letter">B</span><span class="node-label">sfm</span>
       </div>
-      <div class="stats-bar">
+    </div>
+    <div class="step-content">
+      <div class="step-title">Structure from Motion</div>
+      <div class="step-model" style="color:#43d9ad">OpenSfM · HAHOG features · GPS priors <span class="gpu-badge">CPU</span></div>
+      <div class="step-desc">
+        OpenSfM runs inside Docker, executing three sequential sub-stages:
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin:8px 0;">
+        <div style="background:rgba(67,217,173,0.1);border:1px solid rgba(67,217,173,0.3);border-radius:6px;padding:4px 10px;font-size:11px;color:#43d9ad;min-width:120px">
+          <strong>B1</strong> — detect_features
+        </div>
+        <div style="background:rgba(67,217,173,0.1);border:1px solid rgba(67,217,173,0.3);border-radius:6px;padding:4px 10px;font-size:11px;color:#43d9ad;min-width:120px">
+          <strong>B2</strong> — match_features
+        </div>
+        <div style="background:rgba(67,217,173,0.1);border:1px solid rgba(67,217,173,0.3);border-radius:6px;padding:4px 10px;font-size:11px;color:#43d9ad;min-width:120px">
+          <strong>B3</strong> — reconstruct
+        </div>
+      </div>
+      <div class="step-desc">
+        <strong>B1</strong> extracts SIFT-like (HAHOG) keypoints from every frame.
+        <strong>B2</strong> finds feature correspondences between overlapping frame pairs
+        using a vocabulary tree matcher — the green lines in the match visualization
+        are these correspondences. <strong>B3</strong> incrementally estimates camera
+        poses and sparse 3-D points, anchored by GPS priors.
+        Two densification paths follow: <code>compute_depthmaps</code> (CPU) or
+        <code>export_openmvs → DensifyPointCloud</code> (GPU/CUDA).
+      </div>
+      <div class="step-stats">
         <div class="stat">~1,262 <span>shots registered</span></div>
         <div class="stat">1.8 GB <span>tracks.csv</span></div>
         <div class="stat">2 <span>recon components</span></div>
       </div>
-      <div class="step-output">→ reconstruction.json · undistorted/ · depthmaps/</div>
-    </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#43d9ad; border-color:#43d9ad">B</div>
+      <div class="step-output">CPU → reconstruction.json · undistorted/ · depthmaps/*.npz</div>
+      <div class="step-output">GPU → reconstruction.json · undistorted/ · openmvs/scene_dense.ply</div>
     </div>
     <div class="step-image">
-      <div class="img-wrap img-glow-green">
-        <img src="pipeline/02_sfm_topdown.png" alt="SfM sparse reconstruction top-down view" loading="lazy" />
+      <div class="step-images-grid">
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/02a_features.png" alt="Feature keypoints detected on a frame" loading="lazy" />
+          <div class="img-caption">B1: HAHOG keypoints detected per frame</div>
+        </div>
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/02b_matches.png" alt="Feature matches between two frames" loading="lazy" />
+          <div class="img-caption">B2: Matching keypoints across frames</div>
+        </div>
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/02_sfm_topdown.png" alt="Sparse 3D reconstruction top-down view" loading="lazy" />
+          <div class="img-caption">B3: Sparse 3-D reconstruction (top-down)</div>
+        </div>
       </div>
-      <div class="img-caption">Sparse reconstruction — camera positions + point cloud (top-down)</div>
     </div>
   </div>
 
-  <!-- ── C: Semantic ── -->
+  <!-- ═══════════════════ LABELS ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Labels (GPU)</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- C: Semantic -->
   <div class="step">
-    <div class="step-content">
-      <div class="step-letter">Stage C</div>
-      <div class="step-title">Semantic<br>Segmentation</div>
-      <div class="step-model" style="color:#ff9640">Mask2Former · Cityscapes-150</div>
-      <div class="step-desc">
-        Every undistorted frame is passed through Mask2Former, a
-        transformer-based panoptic segmentation model trained on Cityscapes.
-        Each pixel is labelled: <em>road</em>, <em>vegetation</em>, <em>person</em>,
-        <em>vehicle</em>, etc. Labels are saved as per-frame NPZ files.
-      </div>
-      <div class="step-output">→ labels_rec1/*.npz · *_vis.png overlays</div>
-    </div>
     <div class="step-node">
-      <div class="node-circle" style="color:#ff9640; border-color:#ff9640">C</div>
+      <div class="node-circle" style="color:#ff9640; border-color:#ff9640">
+        <span class="node-letter">C</span><span class="node-label">semantic</span>
+      </div>
+    </div>
+    <div class="step-content">
+      <div class="step-title">Semantic Segmentation</div>
+      <div class="step-model" style="color:#ff9640">Mask2Former-Swin · Cityscapes-150 <span class="gpu-badge">GPU</span></div>
+      <div class="step-desc">
+        Every undistorted frame runs through Mask2Former-Swin-Tiny
+        (<code>facebook/mask2former-swin-tiny-cityscapes-semantic</code>), a
+        transformer-based panoptic segmentation model trained on Cityscapes-150.
+        Frames are processed in batches of 8 for GPU efficiency, with single-image
+        fallback on OOM. Each pixel is mapped to the 5-class project schema:
+        <em>other</em> (0), <em>road</em> (1), <em>grass</em> (2),
+        <em>cone</em> (3, stamped later), <em>removed</em> (4, vehicles/people).
+      </div>
+      <div class="step-stats">
+        <div class="stat">150 <span>Cityscapes classes</span></div>
+        <div class="stat">5 <span>project classes</span></div>
+        <div class="stat">batch <span>8 frames</span></div>
+      </div>
+      <div class="step-output">→ labels/*.npy (HxW uint8) · labels/*_vis.png (colourised PNG)</div>
     </div>
     <div class="step-image">
       <div class="img-wrap img-glow-orange">
-        <img src="pipeline/03_semantic.png" alt="Semantic segmentation mask — grey=road, green=grass, blue=vehicles" loading="lazy" />
+        <img src="pipeline/03_semantic.png" alt="Mask2Former semantic segmentation" loading="lazy" />
       </div>
-      <div class="img-caption">Mask2Former output — grey=road · green=vegetation · blue=vehicle/person</div>
+      <div class="img-caption">Mask2Former: original frame (left) · semantic labels (right) · grey=road, green=grass, red=removed</div>
     </div>
   </div>
 
-  <!-- ── D: Cloud ── -->
+  <!-- ═══════════════════ CLOUD ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Point Cloud</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- D: Cloud -->
   <div class="step">
-    <div class="step-content">
-      <div class="step-letter">Stage D</div>
-      <div class="step-title">Labeled Point<br>Cloud Assembly</div>
-      <div class="step-model" style="color:#38bdf8">OpenSfM depth maps · semantic labels</div>
-      <div class="step-desc">
-        For each frame, depth map pixels are back-projected into 3-D using
-        the calibrated camera pose. The semantic label of each pixel is
-        transferred to the resulting 3-D point. All frames are merged into
-        a single labeled cloud stored in <code>cloud.npz</code>.
+    <div class="step-node">
+      <div class="node-circle" style="color:#38bdf8; border-color:#38bdf8">
+        <span class="node-letter">D</span><span class="node-label">cloud</span>
       </div>
-      <div class="stats-bar">
+    </div>
+    <div class="step-content">
+      <div class="step-title">Labeled Point Cloud Assembly</div>
+      <div class="step-model" style="color:#38bdf8">
+        OpenSfM depth maps + semantic labels
+        <span class="gpu-badge">GPU</span>
+        <span class="gpu-badge" style="background:linear-gradient(135deg,#43d9ad,#38bdf8)">CPU</span>
+      </div>
+      <div class="step-desc">
+        Auto-detects which depth source is available and picks the best assembly path:
+      </div>
+      <div class="step-stats">
+        <div class="stat" style="border-color:rgba(255,101,132,0.4);border-width:1px;border-style:solid">
+          <strong style="color:#ff6584">GPU</strong> OpenMVS PLY → k-NN camera voting
+        </div>
+        <div class="stat" style="border-color:rgba(56,189,248,0.4);border-width:1px;border-style:solid">
+          <strong style="color:#38bdf8">Dense</strong> depthmap back-projection
+        </div>
+        <div class="stat" style="border-color:rgba(100,116,139,0.4);border-width:1px;border-style:solid">
+          <strong style="color:#64748b">Sparse</strong> bundle-adjustment points
+        </div>
+      </div>
+      <div class="step-desc" style="margin-top:8px">
+        For dense paths: pixels are sampled on a stride grid and back-projected
+        using calibrated camera poses. Each 3-D point receives the semantic label
+        of the pixel it came from. All components are merged into one cloud.
+      </div>
+      <div class="step-stats">
         <div class="stat">~6.8 M <span>road pts</span></div>
         <div class="stat">~66 K <span>grass pts</span></div>
-        <div class="stat">~140 K <span>cone pts</span></div>
       </div>
-      <div class="step-output">→ cloud.npz</div>
-    </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#38bdf8; border-color:#38bdf8">D</div>
+      <div class="step-output">→ cloud.npz (xyz · rgb · cls · src)</div>
     </div>
     <div class="step-image">
       <div class="img-wrap img-glow-blue">
         <img src="pipeline/04_cloud.png" alt="Labeled point cloud top-down" loading="lazy" />
       </div>
-      <div class="img-caption">Labeled cloud — top-down projection (road=dark, grass=light)</div>
+      <div class="img-caption">Labeled cloud top-down — road=dark · grass=light · each pixel = labeled 3-D point</div>
     </div>
   </div>
 
-  <!-- ── E: Cones ── -->
+  <!-- ═══════════════════ OBJECTS ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Objects</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- E: Cones -->
   <div class="step">
-    <div class="step-content">
-      <div class="step-letter">Stage E</div>
-      <div class="step-title">Cone Detection<br>+ Clustering</div>
-      <div class="step-model" style="color:#ff6584">YOLO-World · DBSCAN clustering</div>
-      <div class="step-desc">
-        YOLO-World (open-vocabulary detection) finds traffic cones in every
-        frame. Each 2-D detection box is back-projected onto the depth map
-        to recover a 3-D position. Observations across all frames are
-        clustered with DBSCAN; cluster centroids become the measured cone
-        positions stamped into the cloud.
+    <div class="step-node">
+      <div class="node-circle" style="color:#ff6584; border-color:#ff6584">
+        <span class="node-letter">E</span><span class="node-label">cones</span>
       </div>
-      <div class="stats-bar">
+    </div>
+    <div class="step-content">
+      <div class="step-title">Cone Detection + Clustering</div>
+      <div class="step-model" style="color:#ff6584">YOLO-World · DBSCAN · depth back-projection</div>
+      <div class="step-desc">
+        YOLO-World (<code>yolov8s-world.pt</code>, open-vocabulary detection)
+        finds traffic cones in every frame. Each 2-D detection box is
+        back-projected through the depth map to recover a 3-D position.
+        Observations across all frames are clustered with DBSCAN;
+        cluster centroids become the measured cone positions.
+        Each cone is stamped into the cloud as class 3,
+        producing <code>cloud_with_cones.npz</code>.
+      </div>
+      <div class="step-stats">
         <div class="stat">310 <span>measured cones</span></div>
         <div class="stat">≥2 <span>obs threshold</span></div>
         <div class="stat">0.75 m <span>cluster radius</span></div>
       </div>
       <div class="step-output">→ cone_detections.json · cones.json · cloud_with_cones.npz</div>
     </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#ff6584; border-color:#ff6584">E</div>
-    </div>
     <div class="step-image">
       <div class="img-wrap img-glow-pink">
-        <img src="pipeline/05_cones.png" alt="Cone positions overlaid on labeled cloud" loading="lazy" />
+        <img src="pipeline/05_cones.png" alt="Cone positions stamped into labeled point cloud" loading="lazy" />
       </div>
-      <div class="img-caption">Cone cluster centroids (orange dots) stamped into the labeled cloud</div>
+      <div class="img-caption">Orange dots = measured cone positions (cluster centroids) stamped into the cloud</div>
     </div>
   </div>
 
-  <!-- ── F: Export ── -->
+  <!-- ═══════════════════ EXPORT ═══════════════════ -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Export</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- F: Export -->
   <div class="step">
+    <div class="step-node">
+      <div class="node-circle" style="color:#a78bfa; border-color:#a78bfa">
+        <span class="node-letter">F</span><span class="node-label">export</span>
+      </div>
+    </div>
     <div class="step-content">
-      <div class="step-letter">Stage F</div>
-      <div class="step-title">Track Export</div>
-      <div class="step-model" style="color:#a78bfa">Grid-cell rasterization · JSON / OBJ</div>
+      <div class="step-title">Track Export — Grid + OBJ Mesh</div>
+      <div class="step-model" style="color:#a78bfa">Grid rasterization · JSON / OBJ / MTL</div>
       <div class="step-desc">
         The labeled cloud is rasterized onto a 0.35 m grid. Each cell is
         classified as road, grass, or outside based on the dominant label
-        of its constituent points and a configurable road-buffer margin.
-        The result is exported as <code>track.json</code> (browser) and
-        <code>track.obj</code> (mesh).
+        of its constituent points plus configurable road-buffer and grass-fill
+        margins. <code>track.json</code> contains: grid bounds, road/grass
+        cell lists, measured cones with confidence scores, and a centerline hint.
+        <code>track.obj</code>/<code>.mtl</code> export a mesh for external tools.
       </div>
-      <div class="stats-bar">
+      <div class="step-stats">
         <div class="stat">78,740 <span>road cells</span></div>
         <div class="stat">132,955 <span>grass cells</span></div>
         <div class="stat">0.35 m <span>cell size</span></div>
       </div>
       <div class="step-output">→ track.json · track.obj · track.mtl</div>
     </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#a78bfa; border-color:#a78bfa">F</div>
-    </div>
     <div class="step-image">
-      <div class="img-wrap" style="border-color:rgba(167,139,250,0.4); box-shadow:0 8px 32px rgba(167,139,250,0.2)">
-        <img src="pipeline/06_track_export.png" alt="Track export — road cells colored by elevation, and class map" loading="lazy" />
+      <div class="img-wrap img-glow-purple2">
+        <img src="pipeline/06_track_export.png" alt="Track export diagnostics" loading="lazy" />
       </div>
-      <div class="img-caption">Road cells colored by elevation (left) · road/grass class map (right)</div>
+      <div class="img-caption">Road cells by elevation (left) · road/grass class map (right)</div>
     </div>
   </div>
 
-  <!-- ── G: Diagnostics ── -->
+  <!-- F2: Mesh -->
   <div class="step">
+    <div class="step-node">
+      <div class="node-circle" style="color:#14b8a6; border-color:#14b8a6">
+        <span class="node-letter">F2</span><span class="node-label">mesh</span>
+      </div>
+    </div>
     <div class="step-content">
-      <div class="step-letter">Stage G</div>
+      <div class="step-title">Vertex-Colored Mesh (Poisson)</div>
+      <div class="step-model" style="color:#14b8a6">Open3D · trimesh · Draco GLB</div>
+      <div class="step-desc">
+        The labeled cloud is voxelized, filtered by density, and passed to
+        Open3D's Poisson surface reconstruction. Road and grass are separate
+        meshes with vertex colors; cones stay as instanced geometry from
+        <code>track.json</code>. Output is a Draco-compressed GLB
+        (<code>track_mesh.glb</code>) ready for the frontend.
+        Requires Python 3.10–3.12: <code>uv sync --extra mesh</code>.
+      </div>
+      <div class="step-stats">
+        <div class="stat">≤200 K <span>target triangles</span></div>
+        <div class="stat">0.05 m <span>voxel size</span></div>
+        <div class="stat">Poisson <span>depth 9</span></div>
+      </div>
+      <div class="step-output">→ track_mesh.glb (vertex-colored GLB)</div>
+    </div>
+    <div class="step-image">
+      <div class="img-wrap img-glow-teal">
+        <img src="pipeline/04_cloud.png" alt="Labeled point cloud ready for meshing" loading="lazy"
+             style="filter:brightness(0.85) saturate(1.2)" />
+      </div>
+      <div class="img-caption">Labeled cloud → Open3D Poisson → track_mesh.glb</div>
+    </div>
+  </div>
+
+  <!-- G: Diag -->
+  <div class="step">
+    <div class="step-node">
+      <div class="node-circle" style="color:#43d9ad; border-color:#43d9ad">
+        <span class="node-letter">G</span><span class="node-label">diag</span>
+      </div>
+    </div>
+    <div class="step-content">
       <div class="step-title">Diagnostics</div>
       <div class="step-model" style="color:#43d9ad">matplotlib</div>
       <div class="step-desc">
-        Diagnostic plots are generated to verify reconstruction quality:
-        top-down class map with cone overlays, z-elevation histogram by
-        class, road height profile, and height cloud heat maps.
-        Large z-spread indicates noisy depth maps.
+        Diagnostic plots verify reconstruction quality before trusting cone
+        measurements. Top-down class map with cone overlays confirms road
+        topology. Z-elevation histogram catches depth-map noise (wide spread =
+        noisy depth). Road height profile and grass height cloud heat maps
+        reveal surface artefacts. Large z-spread signals noisy depth maps
+        that will propagate into the point cloud.
       </div>
-      <div class="step-output">→ diag/topdown_classes.png · z_hist.png · height_profile.png</div>
-    </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#43d9ad; border-color:#43d9ad">G</div>
+      <div class="step-output">→ diag/{topdown_classes, z_hist, height_profile, road_height_cloud, grass_height_cloud}.png</div>
     </div>
     <div class="step-image">
-      <div class="img-wrap img-glow-green">
-        <img src="pipeline/07_topdown_classes.png" alt="Top-down class map with cones" loading="lazy" />
+      <div class="step-images-grid">
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/07_topdown_classes.png" alt="Top-down class map" loading="lazy" />
+          <div class="img-caption">Top-down class map</div>
+        </div>
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/07_z_hist.png" alt="Z-elevation histogram" loading="lazy" />
+          <div class="img-caption">Z-elevation histogram</div>
+        </div>
+        <div class="img-wrap img-glow-green">
+          <img src="pipeline/08_height_profile.png" alt="Road height profile" loading="lazy" />
+          <div class="img-caption">Road height profile</div>
+        </div>
       </div>
-      <div class="img-caption">Top-down class map — blue=road · green=grass · orange=cones</div>
     </div>
   </div>
 
-  <!-- ── H: Frontend Simulator ── -->
+  <!-- H: Sync / Simulator -->
   <div class="step">
+    <div class="step-node">
+      <div class="node-circle" style="color:#6c63ff; border-color:#6c63ff">
+        <span class="node-letter">H</span><span class="node-label">sync</span>
+      </div>
+    </div>
     <div class="step-content">
-      <div class="step-letter">Stage H</div>
-      <div class="step-title">Interactive<br>3-D Simulator</div>
+      <div class="step-title">Frontend Sync + Simulator</div>
       <div class="step-model" style="color:#6c63ff">React · Three.js / R3F · Vite</div>
       <div class="step-desc">
-        <code>track.json</code> is served to a browser-based simulator.
-        Road and grass cells render as merged BufferGeometry meshes.
-        Cones render as instanced meshes at exact measured positions.
-        A kinematic vehicle can drive the reconstructed track with
-        surface-based grip and cone-hit detection.
+        <code>track.{json,obj,mtl,glb}</code> are copied into
+        <code>frontend/public/data/</code>. The React simulator loads
+        <code>track.json</code>, renders road and grass as merged
+        <code>BufferGeometry</code> meshes, and cones as
+        <code>InstancedMesh</code> at exact measured positions.
+        A kinematic vehicle drives the track with surface-based grip
+        and cone-hit detection. Built-in cone editor lets you add, remove,
+        or knock over cones and export the edited track as JSON.
       </div>
-      <div class="stats-bar">
+      <div class="step-stats">
         <div class="stat">WebGL <span>renderer</span></div>
         <div class="stat">60 fps <span>target</span></div>
         <div class="stat">cone editor <span>built-in</span></div>
       </div>
-      <div class="step-output">→ frontend/ served at /</div>
-    </div>
-    <div class="step-node">
-      <div class="node-circle" style="color:#6c63ff; border-color:#6c63ff">H</div>
+      <div class="step-output">→ frontend/public/data/{track.json, track.obj, track.mtl, track_mesh.glb}</div>
     </div>
     <div class="step-image">
       <div class="img-wrap img-glow-purple">
-        <img src="pipeline/06_track_export.png" alt="Track grid used in simulator" loading="lazy"
+        <img src="pipeline/06_track_export.png" alt="Track grid loaded in Three.js simulator" loading="lazy"
              style="filter:hue-rotate(200deg) brightness(0.85) saturate(1.4)" />
       </div>
-      <div class="img-caption">Track grid → loaded into Three.js simulator</div>
+      <div class="img-caption">Loaded in Three.js — road cells, grass cells, cone positions, driven by WASD</div>
     </div>
   </div>
 
@@ -558,8 +495,8 @@
   <div class="result-inner">
     <h2>Measured Autocross Track</h2>
     <p>
-      310 measured cone positions · 78 K road cells · full 3-D geometry —
-      ready to drive in the simulator.
+      310 measured cone positions · 78 K road cells · vertex-colored GLB mesh ·
+      ready to drive in the browser simulator.
     </p>
     <a href="/" class="result-link">Open Simulator →</a>
   </div>
