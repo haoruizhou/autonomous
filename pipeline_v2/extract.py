@@ -88,8 +88,14 @@ def extract_video(
     sample_fps: float = 4.0,
     image_prefix: Optional[str] = None,
     jpeg_quality: int = 92,
+    start_sec: float = 0.0,
+    duration_sec: Optional[float] = None,
 ) -> dict:
     """Extract sampled frames + write OpenSfM project files for one video.
+
+    start_sec / duration_sec clip the source video by wall-clock time before
+    any frame sampling occurs, so the resulting image set covers exactly the
+    requested window.
 
     Returns a summary dict:
         {video, total_frames, sampled, gps_covered, fps, project_dir}
@@ -105,8 +111,16 @@ def extract_video(
     n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     stride = max(1, int(round(src_fps / sample_fps)))
 
+    first_frame = int(start_sec * src_fps)
+    last_frame = n_total if duration_sec is None else min(n_total, first_frame + int(duration_sec * src_fps))
+    if first_frame > 0 or duration_sec is not None:
+        clip_min = (last_frame - first_frame) / src_fps / 60
+        print(f"  clip: frames {first_frame}–{last_frame} ({clip_min:.1f} min)")
+
+    clip_frames = last_frame - first_frame
     print(f"  {video_path.name}: {n_total} frames @ {src_fps:.2f} fps; "
-          f"sample every {stride} → ~{n_total // stride} frames")
+          f"sample every {stride} → ~{clip_frames // stride} frames "
+          f"({clip_frames / src_fps / 60:.1f} min)")
 
     gpx_points = parse_gpx(gpx_path)
     aligned = align_gpx_to_video(gpx_points, video_path, src_fps)
@@ -122,7 +136,7 @@ def extract_video(
 
     written = 0
     gps_covered = 0
-    for src_fi in range(0, n_total, stride):
+    for src_fi in range(first_frame, last_frame, stride):
         cap.set(cv2.CAP_PROP_POS_FRAMES, src_fi)
         ok, frame_bgr = cap.read()
         if not ok:
@@ -174,10 +188,13 @@ def write_project(
     project_dir: Path,
     sample_fps: float = 4.0,
     config_yaml: Optional[str] = None,
+    start_sec: float = 0.0,
+    duration_sec: Optional[float] = None,
 ) -> dict:
     """Build a single OpenSfM project from one or more videos sharing a GPX track.
 
     Frame names are prefixed by video stem so multi-clip runs don't collide.
+    start_sec / duration_sec apply identically to every video in the list.
     """
     project_dir = Path(project_dir)
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -187,7 +204,8 @@ def write_project(
     index_all: dict[str, dict] = {}
 
     for vp in videos:
-        s = extract_video(vp, gpx_path, project_dir, sample_fps=sample_fps)
+        s = extract_video(vp, gpx_path, project_dir, sample_fps=sample_fps,
+                          start_sec=start_sec, duration_sec=duration_sec)
         summaries.append({k: v for k, v in s.items()
                           if k not in ("frame_index", "exif_overrides")})
         overrides_all.update(s["exif_overrides"])
@@ -224,5 +242,10 @@ if __name__ == "__main__":
                    help="Output OpenSfM project directory")
     p.add_argument("--fps", type=float, default=6.0,
                    help="Sampling rate in frames/sec (default 6)")
+    p.add_argument("--start-sec", type=float, default=0.0,
+                   help="Start offset in seconds into each video (default 0)")
+    p.add_argument("--duration-sec", type=float, default=None,
+                   help="Clip duration in seconds (default: full video)")
     args = p.parse_args()
-    write_project(args.video, args.gpx, args.project, sample_fps=args.fps)
+    write_project(args.video, args.gpx, args.project, sample_fps=args.fps,
+                  start_sec=args.start_sec, duration_sec=args.duration_sec)

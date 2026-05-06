@@ -20,8 +20,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from pipeline_v2 import cloud, cones, diag, export, export_json, extract, semantic, sfm
-from pipeline_v2.mesh import build_track_mesh_glb
+from pipeline_v2 import cloud, diag, export, export_json, extract, sfm
 
 _ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "cones", "export", "mesh", "diag", "sync")
 
@@ -53,6 +52,10 @@ def main() -> None:
                    help="GPX path. Required for extract.")
     p.add_argument("--out", type=Path, required=True, help="Project / output directory")
     p.add_argument("--fps", type=float, default=6.0, help="Frame sampling rate (default 6 fps)")
+    p.add_argument("--start-sec", type=float, default=0.0,
+                   help="Start offset in seconds into each video (default 0)")
+    p.add_argument("--duration-sec", type=float, default=None,
+                   help="Clip duration in seconds (default: full video)")
     p.add_argument("--stage", choices=(*_ALL_STAGES, "all"), default="all")
     p.add_argument("--skip", action="append", default=[],
                    help=f"Stages to skip when --stage all; choices: {_ALL_STAGES}")
@@ -95,7 +98,8 @@ def main() -> None:
 
     if run("extract"):
         print("\n[A] Extract frames + GPS → OpenSfM project")
-        extract.write_project(args.video, args.gpx, project_dir, sample_fps=args.fps)
+        extract.write_project(args.video, args.gpx, project_dir, sample_fps=args.fps,
+                              start_sec=args.start_sec, duration_sec=args.duration_sec)
 
     if run("sfm"):
         print("\n[B] OpenSfM (Docker)")
@@ -113,6 +117,7 @@ def main() -> None:
     components = _components(project_dir)
 
     if run("semantic"):
+        from pipeline_v2 import semantic  # noqa: PLC0415  lazy — loads torch/transformers
         print("\n[C] Semantic labels (Mask2Former-Cityscapes)")
         if not components:
             print("  [skip] no undistorted/* found — run sfm first")
@@ -134,6 +139,7 @@ def main() -> None:
         )
 
     if run("cones"):
+        from pipeline_v2 import cones  # noqa: PLC0415  lazy — loads torch/ultralytics
         print("\n[E] Cone detection + clustering + stamp")
         cones.detect_project(
             project_dir,
@@ -160,6 +166,7 @@ def main() -> None:
             print(f"  [warn] export.export_obj failed: {e}")
 
     if run("mesh"):
+        from pipeline_v2.mesh import build_track_mesh_glb  # noqa: PLC0415  lazy — needs open3d
         print("\n[F2] Vertex-colored mesh (Poisson) → track_mesh.glb")
         try:
             build_track_mesh_glb(

@@ -38,7 +38,8 @@ COPY --from=sfm_base /opt/venv /opt/venv
 COPY --from=sfm_base /source/OpenSfM /source/OpenSfM
 
 # nvcc lives at /usr/local/cuda/bin in the devel image; expose it for cmake and build.
-ENV PATH=/usr/local/cuda/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/usr/local/cuda/bin:/usr/local/bin/OpenMVS:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/lib/OpenMVS
 ENV PYTHONPATH=/source/OpenSfM
 
 # Build OpenMVS with CUDA (MVS module only — no SFM pipeline).
