@@ -55,6 +55,39 @@ def _have_docker() -> bool:
     return shutil.which("docker") is not None
 
 
+def _purge_corrupt_intermediate_files(project_dir: Path) -> None:
+    """Delete zero-byte or corrupt .npz/.exif files left by interrupted runs.
+
+    OpenSfM feature files are numpy zip archives. A partial write leaves a file
+    that passes os.path.exists() but raises BadZipFile when joblib workers open
+    it, aborting the whole stage. Removing them lets detect_features/
+    extract_metadata recompute cleanly on restart.
+    """
+    import zipfile
+    removed = 0
+    for subdir in ("features", "exif"):
+        d = project_dir / subdir
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            if f.suffix == ".npz":
+                if f.stat().st_size == 0:
+                    f.unlink()
+                    removed += 1
+                else:
+                    try:
+                        with zipfile.ZipFile(f):
+                            pass
+                    except zipfile.BadZipFile:
+                        f.unlink()
+                        removed += 1
+            elif f.suffix == ".exif" and f.stat().st_size == 0:
+                f.unlink()
+                removed += 1
+    if removed:
+        print(f"  Purged {removed} corrupt intermediate file(s) before starting Docker")
+
+
 def run_opensfm(
     project_dir: Path,
     image: str = "opensfm:ubuntu24",
@@ -70,6 +103,7 @@ def run_opensfm(
         raise FileNotFoundError(f"{project_dir}/config.yaml is missing")
     if not _have_docker():
         raise RuntimeError("docker binary not found on PATH")
+    _purge_corrupt_intermediate_files(project_dir)
 
     cmds = " && ".join(f"bin/opensfm {s} /project" for s in stages)
     docker_cmd = ["docker", "run", "--rm",
@@ -111,6 +145,7 @@ def run_opensfm_gpu(
         raise FileNotFoundError(f"{project_dir}/images is missing — run extract.py first")
     if not _have_docker():
         raise RuntimeError("docker binary not found on PATH")
+    _purge_corrupt_intermediate_files(project_dir)
 
     sfm_cmds = " && ".join(f"bin/opensfm {s} /project" for s in stages)
     mvs_scene = "/project/undistorted/openmvs/scene.mvs"
