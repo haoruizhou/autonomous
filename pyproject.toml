@@ -9,8 +9,11 @@ dependencies = [
     "tqdm>=4.66.0",
     "pillow>=10.0.0",
     "scipy>=1.12.0",
+    "transformers>=4.40.0,<5.0.0",
+    "accelerate>=0.26.0",
     "ultralytics>=8.4.46",
     "clip",
+    "imageio-ffmpeg>=0.6.0",
 ]
 
 # Open3D has no cp313 wheels yet; install mesh tooling only when needed:

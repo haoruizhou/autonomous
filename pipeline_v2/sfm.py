@@ -84,6 +84,8 @@ def run_opensfm(
     print(f"  Running OpenSfM in Docker on {project_dir} …")
     print(f"  Stages: {' → '.join(stages)}")
     subprocess.run(docker_cmd, check=True)
+    subprocess.run(["docker", "run", "--rm", "-v", f"{project_dir}:/project",
+                    image, "chmod", "-R", "a+rX", "/project"], check=False)
     print("  OpenSfM done.")
 
 
@@ -130,6 +132,8 @@ def run_opensfm_gpu(
     print(f"  Running OpenSfM+OpenMVS (GPU) on {project_dir} …")
     print(f"  Stages: {' → '.join(stages)} → DensifyPointCloud (CUDA)")
     subprocess.run(docker_cmd, check=True)
+    subprocess.run(["docker", "run", "--rm", "-v", f"{project_dir}:/project",
+                    image, "chmod", "-R", "a+rX", "/project"], check=False)
     print("  OpenSfM+OpenMVS GPU done.")
 
 

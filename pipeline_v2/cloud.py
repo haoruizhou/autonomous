@@ -116,6 +116,13 @@ def _read_ply_xyz_rgb(ply_path: Path) -> tuple[np.ndarray, np.ndarray]:
     g_name = "green" if "green" in names else "diffuse_green"
     b_name = "blue" if "blue" in names else "diffuse_blue"
     rgb = np.stack([raw[r_name], raw[g_name], raw[b_name]], axis=1).astype(np.uint8)
+
+    valid = np.isfinite(xyz).all(axis=1)
+    if not valid.all():
+        n_bad = int((~valid).sum())
+        print(f"    dropping {n_bad:,} NaN/Inf points from PLY")
+        xyz, rgb = xyz[valid], rgb[valid]
+
     return xyz, rgb
 
 
