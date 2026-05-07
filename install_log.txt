@@ -1,0 +1,31 @@
+running install
+/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/setuptools/_distutils/cmd.py:90: SetuptoolsDeprecationWarning: setup.py install is deprecated.
+!!
+
+        ********************************************************************************
+        Please avoid running ``setup.py`` directly.
+        Instead, use pypa/build, pypa/installer or other
+        standards-based tools.
+
+        This deprecation is overdue, please update your project and remove deprecated
+        calls to avoid build errors in the future.
+
+        See https://blog.ganssle.io/articles/2021/10/setup-py-deprecated.html for details.
+        ********************************************************************************
+
+!!
+  self.initialize_options()
+running build
+running build_ext
+/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/torch/utils/cpp_extension.py:576: UserWarning: Attempted to use ninja as the BuildExtension backend but we could not find ninja.. Falling back to using the slow distutils backend.
+  warnings.warn(msg.format('we could not find ninja.'))
+/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/torch/utils/cpp_extension.py:490: UserWarning: There are no g++ version bounds defined for CUDA version 11.8
+  warnings.warn(f'There are no {compiler_name} version bounds defined for CUDA version {cuda_str_version}')
+building 'droid_backends' extension
+/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/torch/utils/cpp_extension.py:2356: UserWarning: TORCH_CUDA_ARCH_LIST is not set, all archs for visible cards are included for compilation. 
+If this is not desired, please set os.environ['TORCH_CUDA_ARCH_LIST'].
+  warnings.warn(
+/home/hz/miniconda3/envs/droid_slam/bin/nvcc -I/home/hz/autonomous/DROID-SLAM/thirdparty/lietorch/eigen -I/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/torch/include -I/home/hz/miniconda3/envs/droid_slam/lib/python3.9/site-packages/torch/include/torch/csrc/api/include -I/home/hz/miniconda3/envs/droid_slam/include -I/home/hz/miniconda3/envs/droid_slam/include/python3.9 -c src/altcorr_kernel.cu -o build/temp.linux-x86_64-cpython-39/src/altcorr_kernel.o -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options '-fPIC' -O3 -DTORCH_API_INCLUDE_EXTENSION_H -DPYBIND11_COMPILER_TYPE=\"_gcc\" -DPYBIND11_STDLIB=\"_libstdcpp\" -DPYBIND11_BUILD_ABI=\"_cxxabi1016\" -DTORCH_EXTENSION_NAME=droid_backends -D_GLIBCXX_USE_CXX11_ABI=1 -gencode=arch=compute_86,code=compute_86 -gencode=arch=compute_86,code=sm_86 -std=c++17
+cc1plus: fatal error: src/altcorr_kernel.cu: No such file or directory
+compilation terminated.
+error: command '/home/hz/miniconda3/envs/droid_slam/bin/nvcc' failed with exit code 1

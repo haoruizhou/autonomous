@@ -103,12 +103,36 @@ def parse_gpx(gpx_path: Path) -> list[dict]:
     return points
 
 
+def _ffprobe_binary() -> str:
+    """Return path to ffprobe, preferring system install then imageio-ffmpeg bundle."""
+    import shutil
+    sys_ffprobe = shutil.which("ffprobe")
+    if sys_ffprobe:
+        return sys_ffprobe
+    try:
+        import imageio_ffmpeg
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        # imageio-ffmpeg ships ffmpeg; ffprobe lives alongside it
+        import os
+        ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), "ffprobe")
+        if not os.path.exists(ffprobe_bin):
+            # Some builds ship a single combined binary named ffmpeg
+            ffprobe_bin = ffmpeg_bin.replace("ffmpeg", "ffprobe")
+        if os.path.exists(ffprobe_bin):
+            return ffprobe_bin
+        # Fall back to the ffmpeg binary itself with -of json (ffprobe-compatible flags)
+        return ffmpeg_bin
+    except ImportError:
+        pass
+    return "ffprobe"
+
+
 def video_creation_time(video_path: Path) -> Optional[datetime]:
-    """Extract creation_time from MP4 metadata via ffprobe."""
+    """Extract creation_time from MP4 metadata via ffprobe (or imageio-ffmpeg fallback)."""
     import subprocess, json as _json
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
+            [_ffprobe_binary(), "-v", "quiet", "-print_format", "json",
              "-show_format", str(video_path)],
             capture_output=True, text=True, check=True,
         )

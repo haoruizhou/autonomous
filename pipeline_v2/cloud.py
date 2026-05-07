@@ -147,8 +147,7 @@ def _assemble_component_openmvs(
 
     print(f"  {undist_subdir}: loading OpenMVS dense PLY …")
     xyz, rgb_ply = _read_ply_xyz_rgb(ply_path)
-    N = len(xyz)
-    print(f"    {N:,} points loaded")
+    print(f"    {len(xyz):,} points loaded")
 
     recs = json.loads((undist / "reconstruction.json").read_text())
 
@@ -166,9 +165,26 @@ def _assemble_component_openmvs(
             shot_list.append((R, t, cameras[shot["camera"]], lp))
             cam_origins.append(origin)
 
+    # Filter PLY points to camera bounding box + generous margin.
+    # OpenMVS DensifyPointCloud produces extreme coordinate outliers (finite but
+    # ~1e33) from degenerate triangulations. These pass np.isfinite() but land
+    # nowhere near the scene, causing k-NN to assign wrong cameras to 99%+ of points.
+    if cam_origins:
+        origins_arr = np.array(cam_origins, dtype=np.float64)
+        margin = 100.0  # metres beyond camera bbox
+        lo = origins_arr.min(axis=0) - margin
+        hi = origins_arr.max(axis=0) + margin
+        in_bbox = np.all((xyz >= lo) & (xyz <= hi), axis=1)
+        n_before = len(xyz)
+        xyz, rgb_ply = xyz[in_bbox], rgb_ply[in_bbox]
+        n_removed = n_before - len(xyz)
+        if n_removed:
+            print(f"    removed {n_removed:,} out-of-bbox outlier points ({len(xyz):,} remain)")
+
     if not shot_list:
         raise RuntimeError(f"No labeled shots found for {undist_subdir}")
 
+    N = len(xyz)
     n_cams = len(shot_list)
     tree = KDTree(np.array(cam_origins, dtype=np.float64))
 

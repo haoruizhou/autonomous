@@ -156,7 +156,19 @@ def export_track_json(
     xyz, cls = cloud["xyz"], cloud["cls"]
     road_xyz = xyz[cls == ROAD]
     grass_xyz = xyz[cls == GRASS]
-    all_ground = xyz[(cls == ROAD) | (cls == GRASS)]
+
+    # Filter MVS floater points: keep road/grass within ±3σ of the median road z.
+    # Dense MVS produces mis-triangulated points at wrong depths; when projected onto
+    # camera label maps they can pick up "road" labels despite being far above/below ground.
+    if len(road_xyz) > 10:
+        road_z_med = float(np.median(road_xyz[:, 2]))
+        road_z_mad = float(np.median(np.abs(road_xyz[:, 2] - road_z_med)))
+        road_z_tol = max(road_z_mad * 3.0, 5.0)  # at least ±5m
+        road_xyz = road_xyz[np.abs(road_xyz[:, 2] - road_z_med) <= road_z_tol]
+        grass_xyz = grass_xyz[np.abs(grass_xyz[:, 2] - road_z_med) <= road_z_tol + 10.0]
+        print(f"  [export] road z filter: median={road_z_med:.1f} tol=±{road_z_tol:.1f}m → {len(road_xyz):,} road pts kept")
+
+    all_ground = np.concatenate([road_xyz, grass_xyz]) if len(road_xyz) and len(grass_xyz) else (road_xyz if len(road_xyz) else grass_xyz)
     ground_z = float(np.percentile(all_ground[:, 2], 5)) if len(all_ground) else 0.0
 
     grid = _make_grid(all_ground if len(all_ground) else xyz, cell_m, grass_margin_m)
