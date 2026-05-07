@@ -66,12 +66,16 @@ def _intrinsics(cam: dict, W: int, H: int) -> np.ndarray:
                      [0, 0, 1.0]], dtype=np.float64)
 
 
-def _read_ply_xyz_rgb(ply_path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Read XYZ and RGB from a binary or ASCII PLY file.
+def _read_ply_openmvs(ply_path: Path, stride: int = 1) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """Read XYZ, RGB and view_indices from an OpenMVS binary PLY file.
 
-    Handles OpenMVS color property names (red/green/blue or diffuse_red/…).
-    Returns xyz float32 (N,3) and rgb uint8 (N,3).
+    OpenMVS dense PLYs contain 'list' properties (view_indices, view_weights)
+    which standard numpy-dtype-based parsers fail to read correctly.
+    
+    stride: Only process every N-th vertex (recommended for large clouds).
     """
+    import struct
+
     with open(ply_path, "rb") as f:
         header: list[str] = []
         while True:
@@ -81,49 +85,56 @@ def _read_ply_xyz_rgb(ply_path: Path) -> tuple[np.ndarray, np.ndarray]:
                 break
 
         n_verts = 0
-        is_binary = False
-        props: list[tuple[str, str]] = []
         for line in header:
             if line.startswith("element vertex"):
                 n_verts = int(line.split()[-1])
-            elif "binary_little_endian" in line:
-                is_binary = True
-            elif line.startswith("property") and not line.startswith("property list"):
-                parts = line.split()
-                props.append((parts[1], parts[2]))  # (type, name)
 
-        _type_map = {
-            "float": "f4", "float32": "f4",
-            "double": "f8", "float64": "f8",
-            "uchar": "u1", "uint8": "u1",
-            "char": "i1", "int8": "i1",
-            "short": "i2", "int16": "i2",
-            "ushort": "u2", "uint16": "u2",
-            "int": "i4", "int32": "i4",
-            "uint": "u4", "uint32": "u4",
-        }
-        dt = np.dtype([(name, _type_map.get(tp, "f4")) for tp, name in props])
-        raw = np.frombuffer(f.read(n_verts * dt.itemsize), dtype=dt) if is_binary else \
-              np.array([f.readline().split() for _ in range(n_verts)], dtype=dt)
+        xyz_list = []
+        rgb_list = []
+        views_list = []
 
-    names = {name for _, name in props}
-    x = raw["x"].astype(np.float32)
-    y = raw["y"].astype(np.float32)
-    z = raw["z"].astype(np.float32)
-    xyz = np.stack([x, y, z], axis=1)
+        print(f"    parsing {n_verts:,} vertices (stride={stride}) …")
+        for i in range(n_verts):
+            if i % stride == 0:
+                data = f.read(12 + 3 + 12)  # xyz, rgb, normals
+                if not data:
+                    break
+                xyz = struct.unpack("fff", data[:12])
+                rgb = struct.unpack("BBB", data[12:15])
+                
+                # view_indices list
+                n_v_data = f.read(1)
+                if not n_v_data: break
+                n_views = struct.unpack("B", n_v_data)[0]
+                views = np.frombuffer(f.read(4 * n_views), dtype=np.uint32).copy()
+                
+                # view_weights list
+                n_w_data = f.read(1)
+                if not n_w_data: break
+                n_weights = struct.unpack("B", n_w_data)[0]
+                f.read(4 * n_weights)
 
-    r_name = "red" if "red" in names else "diffuse_red"
-    g_name = "green" if "green" in names else "diffuse_green"
-    b_name = "blue" if "blue" in names else "diffuse_blue"
-    rgb = np.stack([raw[r_name], raw[g_name], raw[b_name]], axis=1).astype(np.uint8)
+                xyz_list.append(xyz)
+                rgb_list.append(rgb)
+                views_list.append(views)
+            else:
+                # Skip this vertex
+                # We still have to read n_views/n_weights to know how much to skip
+                f.seek(12 + 3 + 12, 1)
+                n_v_data = f.read(1)
+                if not n_v_data: break
+                n_views = struct.unpack("B", n_v_data)[0]
+                f.seek(4 * n_views, 1)
+                n_w_data = f.read(1)
+                if not n_w_data: break
+                n_weights = struct.unpack("B", n_w_data)[0]
+                f.seek(4 * n_weights, 1)
 
-    valid = np.isfinite(xyz).all(axis=1)
-    if not valid.all():
-        n_bad = int((~valid).sum())
-        print(f"    dropping {n_bad:,} NaN/Inf points from PLY")
-        xyz, rgb = xyz[valid], rgb[valid]
-
-    return xyz, rgb
+    return (
+        np.array(xyz_list, dtype=np.float32),
+        np.array(rgb_list, dtype=np.uint8),
+        views_list
+    )
 
 
 def _assemble_component_openmvs(
@@ -133,31 +144,36 @@ def _assemble_component_openmvs(
     max_depth_m: float = 40.0,
     k_cameras: int = 6,
 ) -> dict:
-    """Label an OpenMVS dense PLY by projecting each point onto its k nearest cameras.
+    """Label an OpenMVS dense PLY by projecting each point onto the cameras that saw it.
 
-    For each dense point we find the k spatially nearest cameras, project the point
-    into each camera's label map, and assign the majority-vote label. RAM peak ~600 MB
-    for a 5M-point cloud with 2400 cameras.
+    Instead of k-NN search, we use the 'view_indices' embedded in the PLY by OpenMVS.
     """
-    from scipy.spatial import KDTree
-
     undist = project_dir / undist_subdir
     ply_path = undist / "openmvs" / "scene_dense.ply"
     lbl_dir = project_dir / labels_subdir
 
     print(f"  {undist_subdir}: loading OpenMVS dense PLY …")
-    xyz, rgb_ply = _read_ply_xyz_rgb(ply_path)
-    print(f"    {len(xyz):,} points loaded")
+    # For large clouds, use a stride to keep processing time reasonable in Python.
+    # 1.8M points (stride=10 for 18M) is plenty for a track mesh.
+    xyz, rgb_ply, views_all = _read_ply_openmvs(ply_path, stride=10)
+    N_total = len(xyz)
+    print(f"    {N_total:,} points loaded")
 
     recs = json.loads((undist / "reconstruction.json").read_text())
-
+    
+    # Map camera indices to (R, t, cam, labels)
+    # OpenSfM export_openmvs writes shots in the order they appear in reconstruction.json
     shot_list: list[tuple] = []
     cam_origins: list[np.ndarray] = []
     for rec in recs:
         cameras = rec["cameras"]
-        for sname, shot in rec["shots"].items():
+        # Maintain order for indexing
+        for sname in sorted(rec["shots"].keys()):
+            shot = rec["shots"][sname]
             lp = lbl_dir / f"{Path(sname).stem}.npy"
             if not lp.exists():
+                shot_list.append(None)
+                cam_origins.append(None)
                 continue
             R = _angle_axis_to_R(np.array(shot["rotation"]))
             t = np.array(shot["translation"], dtype=np.float64)
@@ -165,64 +181,53 @@ def _assemble_component_openmvs(
             shot_list.append((R, t, cameras[shot["camera"]], lp))
             cam_origins.append(origin)
 
-    # Filter PLY points to camera bounding box + generous margin.
-    # OpenMVS DensifyPointCloud produces extreme coordinate outliers (finite but
-    # ~1e33) from degenerate triangulations. These pass np.isfinite() but land
-    # nowhere near the scene, causing k-NN to assign wrong cameras to 99%+ of points.
-    if cam_origins:
-        origins_arr = np.array(cam_origins, dtype=np.float64)
-        margin = 100.0  # metres beyond camera bbox
+    # Filter outliers and invalid projections
+    valid_mask = np.isfinite(xyz).all(axis=1)
+    
+    # Bounding box filter (OpenMVS artifacts)
+    if any(o is not None for o in cam_origins):
+        origins_arr = np.array([o for o in cam_origins if o is not None], dtype=np.float64)
+        margin = 100.0
         lo = origins_arr.min(axis=0) - margin
         hi = origins_arr.max(axis=0) + margin
-        in_bbox = np.all((xyz >= lo) & (xyz <= hi), axis=1)
-        n_before = len(xyz)
-        xyz, rgb_ply = xyz[in_bbox], rgb_ply[in_bbox]
-        n_removed = n_before - len(xyz)
-        if n_removed:
-            print(f"    removed {n_removed:,} out-of-bbox outlier points ({len(xyz):,} remain)")
+        valid_mask &= np.all((xyz >= lo) & (xyz <= hi), axis=1)
 
-    if not shot_list:
-        raise RuntimeError(f"No labeled shots found for {undist_subdir}")
-
+    xyz = xyz[valid_mask]
+    rgb_ply = rgb_ply[valid_mask]
+    views_all = [views_all[i] for i in range(N_total) if valid_mask[i]]
     N = len(xyz)
-    n_cams = len(shot_list)
-    tree = KDTree(np.array(cam_origins, dtype=np.float64))
-
-    # For each point, query its k nearest cameras. Sort by camera so each
-    # label file is loaded exactly once.
-    k = min(k_cameras, n_cams)
-    _, cam_idx_arr = tree.query(xyz.astype(np.float64), k=k)  # (N, k)
-    if cam_idx_arr.ndim == 1:
-        cam_idx_arr = cam_idx_arr[:, None]
-
-    # Flatten to (N*k,) pairs, sort by camera index
-    all_pt_idx = np.repeat(np.arange(N, dtype=np.int32), k)
-    all_cam_idx = cam_idx_arr.ravel().astype(np.int32)
-    order = np.argsort(all_cam_idx, kind="stable")
-    sorted_pts = all_pt_idx[order]
-    sorted_cams = all_cam_idx[order]
-
-    boundaries = np.where(np.diff(sorted_cams))[0] + 1
-    pt_groups = np.split(sorted_pts, boundaries)
-    unique_cams = sorted_cams[np.concatenate([[0], boundaries])]
+    print(f"    {N:,} points remain after outlier filtering")
 
     # vote_counts[i, c] = number of cameras that labelled point i as class c
     vote_counts = np.zeros((N, _N_CLASSES), dtype=np.uint16)
 
-    for ci, pt_indices in zip(unique_cams.tolist(), pt_groups):
+    # Group points by camera to minimize label loading
+    cam_to_pts = defaultdict(list)
+    for pt_idx, views in enumerate(views_all):
+        for v_idx in views:
+            if v_idx < len(shot_list) and shot_list[v_idx] is not None:
+                cam_to_pts[v_idx].append(pt_idx)
+
+    print(f"    projecting onto {len(cam_to_pts)} cameras …")
+    for ci, pt_indices_list in cam_to_pts.items():
         R, t, cam, lp = shot_list[ci]
         lbl = np.load(lp)
         H, W = lbl.shape
         f = float(cam["focal"]) * max(W, H)
 
+        pt_indices = np.array(pt_indices_list, dtype=np.int32)
         pts = xyz[pt_indices].astype(np.float64)
         X_cam = pts @ R.T + t
-        valid_depth = (X_cam[:, 2] > 0) & (X_cam[:, 2] < max_depth_m)
+        
+        # We don't need max_depth here as these points were triangulated from this camera
+        valid_depth = (X_cam[:, 2] > 0)
         u = np.round(X_cam[:, 0] / X_cam[:, 2] * f + W / 2).astype(np.int32)
         v = np.round(X_cam[:, 1] / X_cam[:, 2] * f + H / 2).astype(np.int32)
+        
         valid = valid_depth & (u >= 0) & (u < W) & (v >= 0) & (v < H)
         if not valid.any():
             continue
+        
         labels = lbl[v[valid], u[valid]].astype(np.int32)
         np.add.at(vote_counts, (pt_indices[valid], labels), 1)
 
@@ -509,11 +514,46 @@ def assemble_component(
     return {"xyz": xyz, "rgb": rgb, "cls": cls, "src": src}
 
 
+def _align_components(parts: list[dict]) -> None:
+    """Fix Z-bias between reconstruction components.
+    
+    OpenSfM sometimes assigns a different GPS altitude offset to each component.
+    Assuming the track is mostly flat, we align components so their median road Z is identical.
+    """
+    if len(parts) < 2:
+        return
+
+    # Use first component with road points as reference
+    ref_z = None
+    for p in parts:
+        road_mask = p["cls"] == ROAD
+        if road_mask.any():
+            ref_z = np.median(p["xyz"][road_mask, 2])
+            print(f"  [align] reference component road median Z: {ref_z:.2f}")
+            break
+    
+    if ref_z is None:
+        return
+
+    for i, p in enumerate(parts):
+        road_mask = p["cls"] == ROAD
+        if not road_mask.any():
+            continue
+        
+        comp_z = np.median(p["xyz"][road_mask, 2])
+        offset = ref_z - comp_z
+        if abs(offset) > 0.01:
+            print(f"  [align] component {i}: shifting Z by {offset:.2f}m (median road Z was {comp_z:.2f})")
+            p["xyz"][:, 2] += offset
+
+
 def assemble_project(
     project_dir: Path,
     components: Iterable[tuple[str, str]] = (
         ("undistorted", "labels"),
         ("undistorted_rec1", "labels_rec1"),
+        ("undistorted_rec2", "labels_rec2"),
+        ("undistorted_rec3", "labels_rec3"),
     ),
     pixel_stride: int = 4,
     max_depth_m: float = 40.0,
@@ -521,13 +561,23 @@ def assemble_project(
     project_dir = Path(project_dir)
     parts = []
     for undist_sub, lbl_sub in components:
-        if not (project_dir / undist_sub / "reconstruction.json").exists():
-            print(f"  [skip] {undist_sub}: no reconstruction.json")
+        if not (project_dir / undist_sub / "reconstruction.json").exists() and \
+           not (project_dir / undist_sub / "images").is_dir():
             continue
-        parts.append(assemble_component(
-            project_dir, undist_sub, lbl_sub,
-            pixel_stride=pixel_stride, max_depth_m=max_depth_m,
-        ))
+        
+        try:
+            parts.append(assemble_component(
+                project_dir, undist_sub, lbl_sub,
+                pixel_stride=pixel_stride, max_depth_m=max_depth_m,
+            ))
+        except Exception as e:
+            print(f"  [warn] {undist_sub}: failed to assemble: {e}")
+
+    if not parts:
+        raise RuntimeError("No reconstruction components found to assemble")
+
+    # Fix vertical misalignment between components
+    _align_components(parts)
 
     cloud = {k: np.concatenate([p[k] for p in parts]) for k in parts[0].keys()}
     out = project_dir / "cloud.npz"

@@ -28,7 +28,12 @@ _ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "cones", "export", "mesh",
 def _components(project_dir: Path) -> list[tuple[str, str]]:
     """Return [(undistorted_subdir, labels_subdir), ...] for whichever recs exist."""
     pairs: list[tuple[str, str]] = []
-    for undist, lbls in (("undistorted", "labels"), ("undistorted_rec1", "labels_rec1")):
+    for undist, lbls in (
+        ("undistorted", "labels"),
+        ("undistorted_rec1", "labels_rec1"),
+        ("undistorted_rec2", "labels_rec2"),
+        ("undistorted_rec3", "labels_rec3"),
+    ):
         if (project_dir / undist / "reconstruction.json").exists() or (project_dir / undist / "images").is_dir():
             pairs.append((undist, lbls))
     return pairs

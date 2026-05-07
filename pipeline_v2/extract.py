@@ -40,7 +40,9 @@ sift_peak_threshold: 0.066
 matcher_type: FLANN
 matching_gps_distance: 60
 matching_gps_neighbors: 24
-matching_time_neighbors: 12
+# 20 covers ±3-4 s at 6 fps — enough to bridge the gap between video clips when
+# frames are globally sorted by capture_time (see write_project).
+matching_time_neighbors: 20
 matching_use_filters: yes
 lowes_ratio: 0.85
 
@@ -81,29 +83,22 @@ def _gps_to_exif_override(gps: Optional[dict], dop_m: float = 5.0) -> Optional[d
     }
 
 
-def extract_video(
+def _collect_video_frames(
     video_path: Path,
     gpx_path: Path,
-    project_dir: Path,
     sample_fps: float = 4.0,
-    image_prefix: Optional[str] = None,
     jpeg_quality: int = 92,
     start_sec: float = 0.0,
     duration_sec: Optional[float] = None,
-) -> dict:
-    """Extract sampled frames + write OpenSfM project files for one video.
+) -> tuple[list[dict], dict]:
+    """Decode sampled frames from one video into memory.
 
-    start_sec / duration_sec clip the source video by wall-clock time before
-    any frame sampling occurs, so the resulting image set covers exactly the
-    requested window.
-
-    Returns a summary dict:
-        {video, total_frames, sampled, gps_covered, fps, project_dir}
+    Returns:
+        frames   — list of dicts:
+                   {capture_time, frame_bgr, gps, video, src_frame, src_fps}
+                   sorted by capture_time within this video.
+        summary  — {video, total_frames, sampled, gps_covered, fps, stride}
     """
-    project_dir = Path(project_dir)
-    images_dir = project_dir / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -112,74 +107,54 @@ def extract_video(
     stride = max(1, int(round(src_fps / sample_fps)))
 
     first_frame = int(start_sec * src_fps)
-    last_frame = n_total if duration_sec is None else min(n_total, first_frame + int(duration_sec * src_fps))
+    last_frame = (n_total if duration_sec is None
+                  else min(n_total, first_frame + int(duration_sec * src_fps)))
     if first_frame > 0 or duration_sec is not None:
-        clip_min = (last_frame - first_frame) / src_fps / 60
-        print(f"  clip: frames {first_frame}–{last_frame} ({clip_min:.1f} min)")
+        print(f"  clip: frames {first_frame}–{last_frame} "
+              f"({(last_frame - first_frame) / src_fps / 60:.1f} min)")
 
-    clip_frames = last_frame - first_frame
     print(f"  {video_path.name}: {n_total} frames @ {src_fps:.2f} fps; "
-          f"sample every {stride} → ~{clip_frames // stride} frames "
-          f"({clip_frames / src_fps / 60:.1f} min)")
+          f"sample every {stride} → ~{(last_frame - first_frame) // stride} frames "
+          f"({(last_frame - first_frame) / src_fps / 60:.1f} min)")
 
     gpx_points = parse_gpx(gpx_path)
     aligned = align_gpx_to_video(gpx_points, video_path, src_fps)
     t_end = video_creation_time(video_path) or datetime.now(timezone.utc)
-    # creation_time is end-of-recording on iPhone/QuickTime — back out the start.
     creation_t = datetime.fromtimestamp(
         t_end.timestamp() - n_total / src_fps, tz=t_end.tzinfo
     )
 
-    prefix = image_prefix or video_path.stem
-    frame_index: dict[str, dict] = {}
-    overrides: dict[str, dict] = {}
-
-    written = 0
+    frames: list[dict] = []
     gps_covered = 0
     for src_fi in range(first_frame, last_frame, stride):
         cap.set(cv2.CAP_PROP_POS_FRAMES, src_fi)
         ok, frame_bgr = cap.read()
         if not ok:
             continue
-
-        name = f"{prefix}_{src_fi:06d}.jpg"
-        out_path = images_dir / name
-        cv2.imwrite(str(out_path), frame_bgr,
-                    [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)])
-
         gps = aligned[src_fi] if src_fi < len(aligned) else None
         capture_t = creation_t.timestamp() + src_fi / src_fps
-
-        entry: dict = {
-            # OpenSfM ShotMeasurementDouble requires a numeric Unix timestamp.
-            "capture_time": float(capture_t),
-        }
-        gps_entry = _gps_to_exif_override(gps)
-        if gps_entry:
-            entry.update(gps_entry)
+        if gps is not None:
             gps_covered += 1
-        overrides[name] = entry
-
-        frame_index[name] = {
+        frames.append({
+            "capture_time": float(capture_t),
+            "frame_bgr": frame_bgr,
+            "gps": gps,
             "video": video_path.stem,
             "src_frame": src_fi,
             "src_fps": src_fps,
-            "gps": gps,
-        }
-        written += 1
+            "jpeg_quality": jpeg_quality,
+        })
 
     cap.release()
-
-    return {
+    summary = {
         "video": video_path.stem,
         "total_frames": n_total,
-        "sampled": written,
+        "sampled": len(frames),
         "gps_covered": gps_covered,
         "fps": src_fps,
         "stride": stride,
-        "frame_index": frame_index,
-        "exif_overrides": overrides,
     }
+    return frames, summary
 
 
 def write_project(
@@ -193,23 +168,56 @@ def write_project(
 ) -> dict:
     """Build a single OpenSfM project from one or more videos sharing a GPX track.
 
-    Frame names are prefixed by video stem so multi-clip runs don't collide.
-    start_sec / duration_sec apply identically to every video in the list.
+    All frames across all videos are sorted globally by capture_time before being
+    written with sequential zero-padded names (000000.jpg, 000001.jpg, …).  This
+    ensures that frames from different clips are adjacent in the image sequence at
+    the temporal seam, so OpenSfM's matching_time_neighbors walks right across the
+    gap between clips and produces a single connected reconstruction.
     """
     project_dir = Path(project_dir)
     project_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = project_dir / "images"
+    images_dir.mkdir(exist_ok=True)
 
-    summaries = []
+    # ── 1. Collect all frames from all videos ────────────────────────────────
+    all_frames: list[dict] = []
+    summaries: list[dict] = []
+    for vp in videos:
+        frames, summary = _collect_video_frames(
+            vp, gpx_path,
+            sample_fps=sample_fps,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+        )
+        all_frames.extend(frames)
+        summaries.append(summary)
+
+    # ── 2. Sort globally by capture_time ─────────────────────────────────────
+    all_frames.sort(key=lambda f: f["capture_time"])
+
+    # ── 3. Write images + build OpenSfM metadata ─────────────────────────────
     overrides_all: dict[str, dict] = {}
     index_all: dict[str, dict] = {}
+    gps_total = 0
 
-    for vp in videos:
-        s = extract_video(vp, gpx_path, project_dir, sample_fps=sample_fps,
-                          start_sec=start_sec, duration_sec=duration_sec)
-        summaries.append({k: v for k, v in s.items()
-                          if k not in ("frame_index", "exif_overrides")})
-        overrides_all.update(s["exif_overrides"])
-        index_all.update(s["frame_index"])
+    for global_idx, f in enumerate(all_frames):
+        name = f"{global_idx:06d}.jpg"
+        cv2.imwrite(str(images_dir / name), f["frame_bgr"],
+                    [cv2.IMWRITE_JPEG_QUALITY, int(f["jpeg_quality"])])
+
+        entry: dict = {"capture_time": f["capture_time"]}
+        gps_entry = _gps_to_exif_override(f["gps"])
+        if gps_entry:
+            entry.update(gps_entry)
+            gps_total += 1
+        overrides_all[name] = entry
+
+        index_all[name] = {
+            "video": f["video"],
+            "src_frame": f["src_frame"],
+            "src_fps": f["src_fps"],
+            "gps": f["gps"],
+        }
 
     (project_dir / "exif_overrides.json").write_text(
         json.dumps(overrides_all, indent=2, default=str)
@@ -223,12 +231,13 @@ def write_project(
         "project_dir": str(project_dir),
         "sample_fps": sample_fps,
         "videos": summaries,
-        "n_images": sum(s["sampled"] for s in summaries),
-        "n_with_gps": sum(s["gps_covered"] for s in summaries),
+        "n_images": len(all_frames),
+        "n_with_gps": gps_total,
     }
     (project_dir / "extract_summary.json").write_text(json.dumps(summary, indent=2))
     print(f"  Project ready: {project_dir} "
-          f"({summary['n_images']} images, {summary['n_with_gps']} with GPS)")
+          f"({summary['n_images']} images sorted by capture_time, "
+          f"{gps_total} with GPS)")
     return summary
 
 
