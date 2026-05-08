@@ -34,3 +34,11 @@ py-modules = ["segment_video"]
 
 [tool.uv.sources]
 clip = { git = "https://github.com/ultralytics/CLIP.git" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

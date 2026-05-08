@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 from scipy.spatial import KDTree
 
+from pipeline_v2.geo import apply_similarity, component_similarity_to_gps, transform_for_json
+
 OTHER, ROAD, GRASS, CONE, REMOVED = 0, 1, 2, 3, 4
 
 
@@ -177,6 +179,7 @@ def detect_component(
     model_name: str = "yolov8s-world.pt",
     conf: float = 0.12,
     max_depth_m: float = 45.0,
+    ply_mode: bool = False,
 ) -> list[dict]:
     project_dir = Path(project_dir)
     undist = project_dir / undist_subdir
@@ -184,6 +187,12 @@ def detect_component(
     dm_dir = undist / "depthmaps"
     rec = json.loads((undist / "reconstruction.json").read_text())[0]
     cameras = rec["cameras"]
+    transform = component_similarity_to_gps(undist)
+    if transform is not None:
+        print(
+            f"  {undist_subdir}: cone xyz raw SfM → GPS similarity "
+            f"scale={transform['scale']:.3f}, rms={transform['rms_error_m']:.2f}m"
+        )
     model = _load_model(model_name, conf)
 
     BATCH_SIZE = 8
@@ -192,7 +201,10 @@ def detect_component(
     shot_list = []
     for src_idx, (name, shot) in enumerate(rec["shots"].items()):
         img_path = img_dir / name
-        dm_path = dm_dir / f"{name}.clean.npz"
+        if ply_mode:
+            dm_path = dm_dir / f"{name}.dense.npz"
+        else:
+            dm_path = dm_dir / f"{name}.clean.npz"
         if img_path.exists() and dm_path.exists():
             shot_list.append((src_idx, name, shot, img_path, dm_path))
 
@@ -239,6 +251,8 @@ def detect_component(
                 if d <= 0 or d > max_depth_m:
                     continue
                 xyz = _backproject(px, py, d, Kinv, R, t)
+                if transform is not None:
+                    xyz = apply_similarity(xyz[None, :], transform)[0]
                 records.append({
                     "component": undist_subdir,
                     "image": name,
@@ -262,6 +276,7 @@ def detect_project(
     cluster_radius_m: float = 0.75,
     min_observations: int = 2,
     max_depth_m: float = 45.0,
+    ply_mode: bool = False,
 ) -> dict:
     project_dir = Path(project_dir)
     detections = []
@@ -271,7 +286,7 @@ def detect_project(
             continue
         detections.extend(detect_component(
             project_dir, undist_subdir, model_name=model_name,
-            conf=conf, max_depth_m=max_depth_m,
+            conf=conf, max_depth_m=max_depth_m, ply_mode=ply_mode,
         ))
 
     cones = _cluster_points(detections, cluster_radius_m, min_observations)
@@ -282,6 +297,14 @@ def detect_project(
         "min_observations": min_observations,
         "cones": cones,
     }
+    transforms = {}
+    for undist_subdir in components:
+        transform = component_similarity_to_gps(project_dir / undist_subdir)
+        if transform is not None:
+            transforms[undist_subdir] = transform_for_json(transform)
+    if transforms:
+        summary["coordinate_frame"] = "OpenSfM gps_position local meters"
+        summary["sfm_to_gps_transforms"] = transforms
     (project_dir / "cone_detections.json").write_text(json.dumps(detections, indent=2))
     (project_dir / "cones.json").write_text(json.dumps(summary, indent=2))
     print(f"  Clustered {len(detections)} detections → {len(cones)} cones")
@@ -318,6 +341,7 @@ if __name__ == "__main__":
     p.add_argument("--stamp-cloud", action="store_true")
     p.add_argument("--cloud-in", default="cloud.npz")
     p.add_argument("--cloud-out", default="cloud_with_cones.npz")
+    p.add_argument("--ply-mode", action="store_true")
     args = p.parse_args()
     detect_project(
         args.project,
@@ -326,6 +350,7 @@ if __name__ == "__main__":
         cluster_radius_m=args.cluster_radius,
         min_observations=args.min_observations,
         max_depth_m=args.max_depth,
+        ply_mode=args.ply_mode,
     )
     if args.stamp_cloud:
         stamp_cloud(args.project, in_name=args.cloud_in, out_name=args.cloud_out)

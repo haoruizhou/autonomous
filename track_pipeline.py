@@ -31,7 +31,7 @@ import os
 import random
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -127,6 +127,41 @@ def _ffprobe_binary() -> str:
     return "ffprobe"
 
 
+def video_start_time_from_filename(video_path: Path, date: date | None = None) -> Optional[datetime]:
+    """Parse UTC start time from filename convention NH1_20260429125648Z.mp4.
+
+    Supported patterns (last token before .ext):
+      - HHMMSSZ         → e.g. NH1_125648Z.mp4  (date from GPX or today)
+      - YYYYMMDDHHMMSSZ → e.g. NH1_20260429125648Z.mp4 (date embedded)
+
+    Returns a timezone-aware UTC datetime, or None if no pattern matches.
+    """
+    stem = Path(video_path).stem  # e.g. "NH1_20260429125648Z"
+    parts = stem.split("_")
+    ts_part = parts[-1]           # e.g. "20260429125648Z"
+    if not ts_part.endswith("Z"):
+        return None
+
+    if len(ts_part) == 15 and ts_part[:8].isdigit():
+        # Embedded-date pattern: YYYYMMDDHHMMSSZ
+        try:
+            y = int(ts_part[0:4]); mo = int(ts_part[4:6]); d = int(ts_part[6:8])
+            hh = int(ts_part[8:10]); mm = int(ts_part[10:12]); ss = int(ts_part[12:14])
+            return datetime(y, mo, d, hh, mm, ss, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    elif len(ts_part) == 7 and ts_part[:6].isdigit():
+        # Time-only pattern: HHMMSSZ — date must be provided
+        if date is None:
+            date = datetime.utcnow().date()
+        try:
+            hh = int(ts_part[0:2]); mm = int(ts_part[2:4]); ss = int(ts_part[4:6])
+            return datetime(date.year, date.month, date.day, hh, mm, ss, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 def video_creation_time(video_path: Path) -> Optional[datetime]:
     """Extract creation_time from MP4 metadata via ffprobe (or imageio-ffmpeg fallback)."""
     import subprocess, json as _json
@@ -186,13 +221,16 @@ def align_gpx_to_video(
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    t_end = video_creation_time(video_path)
-    if t_end is None:
-        print(f"  [warn] No creation_time for {video_path.name}; skipping GPS alignment.")
+    # Filename convention: NH1_125648Z.mp4 → UTC start time embedded as HHMMSSZ.
+    # This is the only timestamp source — ignore creation_time metadata entirely.
+    video_date = gpx_points[0]["time"].date()
+    t_start = video_start_time_from_filename(video_path, date=video_date)
+    if t_start is None:
+        print(f"  [warn] Cannot parse UTC start time from filename {video_path.name}; skipping GPS alignment.")
         return [None] * n_frames
-    # iPhone/QuickTime convention: container creation_time = end of recording.
-    duration_s = n_frames / fps if fps > 0 else 0.0
-    t0_ts = t_end.timestamp() - duration_s
+    # GPX times are UTC; video start is UTC per filename convention.
+    # t_start is the UTC timestamp of frame 0.
+    t0_ts = t_start.timestamp()
 
     aligned: list[Optional[dict]] = []
     for fi in range(n_frames):

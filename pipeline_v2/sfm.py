@@ -150,7 +150,8 @@ def run_opensfm_gpu(
     sfm_cmds = " && ".join(f"bin/opensfm {s} /project" for s in stages)
     mvs_scene = "/project/undistorted/openmvs/scene.mvs"
     mvs_cmd = (
-        f"DensifyPointCloud {mvs_scene}"
+        f"LD_LIBRARY_PATH=/usr/local/lib/OpenMVS:$LD_LIBRARY_PATH "
+        f"/usr/local/bin/OpenMVS/DensifyPointCloud {mvs_scene}"
         f" --cuda-device {cuda_device}"
         f" --number-views-fuse 2"
         f" --resolution-level {openmvs_resolution}"

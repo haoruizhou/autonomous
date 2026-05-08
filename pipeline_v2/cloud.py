@@ -41,6 +41,8 @@ from typing import Iterable
 import cv2
 import numpy as np
 
+from pipeline_v2.geo import apply_similarity, component_similarity_to_gps, transform_for_json
+
 OTHER, ROAD, GRASS, CONE, REMOVED = 0, 1, 2, 3, 4
 KEEP_CLASSES = (ROAD, GRASS, CONE)
 _N_CLASSES = 5
@@ -420,18 +422,34 @@ def assemble_component(
 
     # OpenMVS GPU dense PLY takes priority over CPU depthmaps when present.
     openmvs_ply = undist / "openmvs" / "scene_dense.ply"
+    transform = component_similarity_to_gps(undist)
+    if transform is not None:
+        print(
+            f"  {undist_subdir}: raw SfM → GPS similarity "
+            f"scale={transform['scale']:.3f}, rms={transform['rms_error_m']:.2f}m, "
+            f"median={transform['median_error_m']:.2f}m"
+        )
+
     if openmvs_ply.exists():
         print(f"  {undist_subdir}: OpenMVS dense PLY found — using GPU dense path")
-        return _assemble_component_openmvs(
+        part = _assemble_component_openmvs(
             project_dir, undist_subdir, labels_subdir, max_depth_m=max_depth_m
         )
+        if transform is not None:
+            part["xyz"] = apply_similarity(part["xyz"], transform)
+            part["coord_frame"] = "gps"
+        return part
 
     # Auto-fallback: if no depthmaps directory, use sparse SfM points.
     if not dm_dir.is_dir() or not any(dm_dir.glob("*.npz")):
         print(f"  {undist_subdir}: no depthmaps found — using sparse SfM fallback")
-        return _assemble_component_sparse(
+        part = _assemble_component_sparse(
             project_dir, undist_subdir, labels_subdir, max_depth_m=max_depth_m
         )
+        if transform is not None:
+            part["xyz"] = apply_similarity(part["xyz"], transform)
+            part["coord_frame"] = "gps"
+        return part
 
     rec = json.loads((undist / "reconstruction.json").read_text())[0]
     cameras = rec["cameras"]
@@ -511,7 +529,11 @@ def assemble_component(
     print(f"  {undist.name}: {n_frames} frames → {len(xyz):,} points "
           f"(road={int((cls==ROAD).sum()):,} grass={int((cls==GRASS).sum()):,} "
           f"cone={int((cls==CONE).sum()):,})")
-    return {"xyz": xyz, "rgb": rgb, "cls": cls, "src": src}
+    part = {"xyz": xyz, "rgb": rgb, "cls": cls, "src": src}
+    if transform is not None:
+        part["xyz"] = apply_similarity(part["xyz"], transform)
+        part["coord_frame"] = "gps"
+    return part
 
 
 def _align_components(parts: list[dict]) -> None:
@@ -579,9 +601,17 @@ def assemble_project(
     # Fix vertical misalignment between components
     _align_components(parts)
 
-    cloud = {k: np.concatenate([p[k] for p in parts]) for k in parts[0].keys()}
+    array_keys = [k for k in parts[0].keys() if isinstance(parts[0][k], np.ndarray)]
+    cloud = {k: np.concatenate([p[k] for p in parts]) for k in array_keys}
     out = project_dir / "cloud.npz"
     np.savez_compressed(out, **cloud)
+    transforms = {}
+    for undist_sub, _ in components:
+        transform = component_similarity_to_gps(project_dir / undist_sub)
+        if transform is not None:
+            transforms[undist_sub] = transform_for_json(transform)
+    if transforms:
+        (project_dir / "sfm_to_gps_transforms.json").write_text(json.dumps(transforms, indent=2))
     print(f"  Saved {out}: {len(cloud['xyz']):,} points")
     return cloud
 

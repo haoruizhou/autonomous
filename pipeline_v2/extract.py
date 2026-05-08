@@ -24,7 +24,7 @@ import cv2
 from track_pipeline import (
     align_gpx_to_video,
     parse_gpx,
-    video_creation_time,
+    video_start_time_from_filename,
 )
 
 
@@ -117,12 +117,19 @@ def _collect_video_frames(
           f"sample every {stride} → ~{(last_frame - first_frame) // stride} frames "
           f"({(last_frame - first_frame) / src_fps / 60:.1f} min)")
 
+    # Filename-anchored UTC start time — no metadata dependency.
     gpx_points = parse_gpx(gpx_path)
+    video_date = gpx_points[0]["time"].date()
+    t_start = video_start_time_from_filename(video_path, date=video_date)
+    if t_start is None:
+        t_start = datetime.now(timezone.utc)
+        print(f"  [warn] Could not parse timestamp from {video_path.name}, using now()")
     aligned = align_gpx_to_video(gpx_points, video_path, src_fps)
-    t_end = video_creation_time(video_path) or datetime.now(timezone.utc)
-    creation_t = datetime.fromtimestamp(
-        t_end.timestamp() - n_total / src_fps, tz=t_end.tzinfo
+    # t_start is UTC frame-0 time; t_end derived below for metadata purposes.
+    t_end = datetime.fromtimestamp(
+        t_start.timestamp() + n_total / src_fps, tz=t_start.tzinfo
     )
+    creation_t = t_start
 
     frames: list[dict] = []
     gps_covered = 0
