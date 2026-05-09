@@ -94,7 +94,7 @@ export default function Cones({ track, cones, editMode = false, activeTool, onRe
         const isBoundaryKnocked = !isDirection && (cone.knocked_over ?? false);
         const isLying = isDirection || isBoundaryKnocked;
 
-        const zSource = groundHeight(track, { x: cone.xyz[0], y: cone.xyz[1], z: cone.xyz[2] });
+        const zSource = groundHeight({ x: cone.xyz[0], y: cone.xyz[1], z: cone.xyz[2] }, track);
         const yOffset = isLying ? 0.22 : 0.44;
         const [x, y, z] = sourceToThree(
           { x: cone.xyz[0], y: cone.xyz[1], z: zSource + yOffset },

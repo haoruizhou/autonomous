@@ -10,12 +10,12 @@ export function sourceToThree(
   p: { x: number; y: number; z: number },
   origin: SourcePoint,
 ): [number, number, number] {
-  return [p.x - origin.x, p.z - origin.z, p.y - origin.y];
+  return [p.x - origin.x, p.z - origin.z, -(p.y - origin.y)];
 }
 
 export function threeToSource(
   p: THREE.Vector3,
   origin: SourcePoint,
 ): { x: number; y: number; z: number } {
-  return { x: p.x + origin.x, y: p.z + origin.y, z: p.y + origin.z };
+  return { x: p.x + origin.x, y: origin.y - p.z, z: p.y + origin.z };
 }
