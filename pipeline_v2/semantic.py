@@ -184,26 +184,24 @@ def label_project(
 
     summary = {"n_images": len(image_names), "n_labelled": 0, "skipped": 0}
 
-    # Collect unprocessed images into a batch list, preserving stems for saving.
-    pending_names: list[str] = []
-    pending_frames: list[np.ndarray] = []
+    # Filter to unprocessed names only — do NOT pre-load all frames.
+    pending_names = [
+        n for n in image_names
+        if not (out_dir / f"{Path(n).stem}.npy").exists()
+    ]
+    summary["skipped"] = len(image_names) - len(pending_names)
 
-    for name in image_names:
-        stem = Path(name).stem
-        out_npy = out_dir / f"{stem}.npy"
-        if out_npy.exists():
-            summary["skipped"] += 1
-            continue
-        frame_bgr = cv2.imread(str(img_dir / name))
-        if frame_bgr is None:
-            continue
-        pending_names.append(name)
-        pending_frames.append(frame_bgr)
-
-    # Process all pending frames in batches.
-    for batch_start in range(0, len(pending_frames), batch_size):
+    # Stream in batches — load from disk, process, write, free immediately.
+    for batch_start in range(0, len(pending_names), batch_size):
         batch_names = pending_names[batch_start: batch_start + batch_size]
-        batch_frames = pending_frames[batch_start: batch_start + batch_size]
+        batch_frames = []
+        for name in batch_names:
+            frame_bgr = cv2.imread(str(img_dir / name))
+            if frame_bgr is not None:
+                batch_frames.append(frame_bgr)
+
+        if not batch_frames:
+            continue
 
         labels = label_images_batch(model, processor, device, batch_frames, batch_size=batch_size)
 
@@ -215,7 +213,7 @@ def label_project(
                 cv2.imwrite(str(out_dir / f"{stem}_vis.png"), colorise(label))
             summary["n_labelled"] += 1
             if summary["n_labelled"] % 20 == 0:
-                print(f"    {summary['n_labelled']}/{len(image_names)} labelled")
+                print(f"    {summary['n_labelled']}/{len(pending_names)} labelled")
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"  Labels written to {out_dir} "
@@ -252,24 +250,15 @@ def generate_opensfm_masks(
     image_names = sorted(p.name for p in img_dir.glob("*.jpg"))
     summary = {"n_images": len(image_names), "n_written": 0, "skipped": 0}
 
-    pending_names: list[str] = []
-    pending_frames: list[np.ndarray] = []
+    pending_names = [n for n in image_names if not (out_dir / f"{n}.png").exists()]
+    summary["skipped"] = len(image_names) - len(pending_names)
 
-    for name in image_names:
-        # OpenSfM expects masks/<image_filename>.png  e.g. 000000.jpg.png
-        out_path = out_dir / f"{name}.png"
-        if out_path.exists():
-            summary["skipped"] += 1
-            continue
-        frame_bgr = cv2.imread(str(img_dir / name))
-        if frame_bgr is None:
-            continue
-        pending_names.append(name)
-        pending_frames.append(frame_bgr)
-
-    for batch_start in range(0, len(pending_frames), batch_size):
+    for batch_start in range(0, len(pending_names), batch_size):
         batch_names = pending_names[batch_start: batch_start + batch_size]
-        batch_frames = pending_frames[batch_start: batch_start + batch_size]
+        batch_frames = [cv2.imread(str(img_dir / n)) for n in batch_names]
+        batch_frames = [f for f in batch_frames if f is not None]
+        if not batch_frames:
+            continue
 
         labels = label_images_batch(model, processor, device, batch_frames, batch_size=batch_size)
 
@@ -279,7 +268,7 @@ def generate_opensfm_masks(
             cv2.imwrite(str(out_dir / f"{name}.png"), mask)
             summary["n_written"] += 1
             if summary["n_written"] % 20 == 0:
-                print(f"    {summary['n_written']}/{len(image_names)} masks written")
+                print(f"    {summary['n_written']}/{len(pending_names)} masks written")
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"  Masks written to {out_dir} "
