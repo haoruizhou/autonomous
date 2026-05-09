@@ -23,7 +23,7 @@ from pathlib import Path
 
 from pipeline_v2 import cloud, diag, export, export_json, extract, sfm
 
-_ALL_STAGES = ("extract", "sfm", "semantic", "cloud", "dense_depthmap", "cones", "export", "mesh", "diag", "sync")
+_ALL_STAGES = ("extract", "masks", "sfm", "semantic", "cloud", "dense_depthmap", "cones", "export", "mesh", "diag", "sync")
 
 
 def _components(project_dir: Path) -> list[tuple[str, str]]:
@@ -106,6 +106,14 @@ def main() -> None:
         print("\n[A] Extract frames + GPS → OpenSfM project")
         extract.write_project(args.video, args.gpx, project_dir, sample_fps=args.fps,
                               start_sec=args.start_sec, duration_sec=args.duration_sec)
+
+    if run("masks"):
+        from pipeline_v2 import semantic  # noqa: PLC0415  lazy — loads torch/transformers
+        print("\n[A2] Generate OpenSfM feature masks (suppress people/vehicles)")
+        if not (project_dir / "images").is_dir():
+            print("  [skip] images/ not found — run extract first")
+        else:
+            semantic.generate_opensfm_masks(project_dir)
 
     if run("sfm"):
         print("\n[B] OpenSfM (Docker)")

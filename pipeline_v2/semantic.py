@@ -223,17 +223,93 @@ def label_project(
     return summary
 
 
+def generate_opensfm_masks(
+    project_dir: Path,
+    images_subdir: str = "images",
+    out_subdir: str = "masks",
+    model_name: str = _DEFAULT_MODEL,
+    batch_size: int = 8,
+) -> dict:
+    """Generate binary OpenSfM feature masks from semantic segmentation.
+
+    Writes <project>/masks/<stem>.png for each image: white (255) pixels are
+    masked out (people, riders, vehicles, bikes) so OpenSfM skips keypoints
+    there during detect_features.  Requires ``use_masks: yes`` in config.yaml
+    (added automatically by extract.write_project).
+
+    Skips images whose mask file already exists.
+    """
+    project_dir = Path(project_dir)
+    img_dir = project_dir / images_subdir
+    if not img_dir.is_dir():
+        raise FileNotFoundError(f"Images directory not found: {img_dir}")
+
+    out_dir = project_dir / out_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model, processor, device = _load_model(model_name)
+
+    image_names = sorted(p.name for p in img_dir.glob("*.jpg"))
+    summary = {"n_images": len(image_names), "n_written": 0, "skipped": 0}
+
+    pending_names: list[str] = []
+    pending_frames: list[np.ndarray] = []
+
+    for name in image_names:
+        # OpenSfM expects masks/<image_filename>.png  e.g. 000000.jpg.png
+        out_path = out_dir / f"{name}.png"
+        if out_path.exists():
+            summary["skipped"] += 1
+            continue
+        frame_bgr = cv2.imread(str(img_dir / name))
+        if frame_bgr is None:
+            continue
+        pending_names.append(name)
+        pending_frames.append(frame_bgr)
+
+    for batch_start in range(0, len(pending_frames), batch_size):
+        batch_names = pending_names[batch_start: batch_start + batch_size]
+        batch_frames = pending_frames[batch_start: batch_start + batch_size]
+
+        labels = label_images_batch(model, processor, device, batch_frames, batch_size=batch_size)
+
+        for name, label in zip(batch_names, labels):
+            # REMOVED class → 255 (masked), everything else → 0 (valid)
+            mask = np.where(label == REMOVED, np.uint8(255), np.uint8(0))
+            cv2.imwrite(str(out_dir / f"{name}.png"), mask)
+            summary["n_written"] += 1
+            if summary["n_written"] % 20 == 0:
+                print(f"    {summary['n_written']}/{len(image_names)} masks written")
+
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"  Masks written to {out_dir} "
+          f"(written={summary['n_written']}, skipped={summary['skipped']})")
+    return summary
+
+
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Run Mask2Former-Cityscapes on a project")
     p.add_argument("--project", type=Path, required=True)
-    p.add_argument("--images-subdir", default="undistorted/images")
-    p.add_argument("--out-subdir", default="labels")
+    p.add_argument("--mode", choices=("labels", "masks"), default="labels",
+                   help="labels: label undistorted images; masks: generate OpenSfM feature masks")
+    p.add_argument("--images-subdir", default=None,
+                   help="Override images subdirectory (default: undistorted/images for labels, images for masks)")
+    p.add_argument("--out-subdir", default=None,
+                   help="Override output subdirectory (default: labels or masks)")
     p.add_argument("--no-vis", action="store_true")
     p.add_argument("--model", default=_DEFAULT_MODEL)
     args = p.parse_args()
-    label_project(args.project,
-                  images_subdir=args.images_subdir,
-                  out_subdir=args.out_subdir,
-                  model_name=args.model,
-                  save_vis=not args.no_vis)
+    if args.mode == "masks":
+        generate_opensfm_masks(
+            args.project,
+            images_subdir=args.images_subdir or "images",
+            out_subdir=args.out_subdir or "masks",
+            model_name=args.model,
+        )
+    else:
+        label_project(args.project,
+                      images_subdir=args.images_subdir or "undistorted/images",
+                      out_subdir=args.out_subdir or "labels",
+                      model_name=args.model,
+                      save_vis=not args.no_vis)

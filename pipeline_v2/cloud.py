@@ -260,7 +260,21 @@ def _assemble_component_sparse(
     img_dir = undist / "images"
     lbl_dir = project_dir / labels_subdir
 
-    recs = json.loads((undist / "reconstruction.json").read_text())
+    # OpenSfM strips observations from undistorted/reconstruction.json.
+    # Use the original reconstruction.json for points+observations, but read
+    # camera poses from the undistorted one (which has the rectified cameras).
+    orig_rec_path = project_dir / "reconstruction.json"
+    undist_rec_path = undist / "reconstruction.json"
+    if orig_rec_path.exists():
+        recs = json.loads(orig_rec_path.read_text())
+        undist_recs = json.loads(undist_rec_path.read_text())
+        # Build undistorted shot poses indexed by shot name for fast lookup
+        undist_shots: dict = {}
+        for urec in undist_recs:
+            undist_shots.update(urec.get("shots", {}))
+    else:
+        recs = json.loads(undist_rec_path.read_text())
+        undist_shots = None
     all_xyz, all_rgb, all_cls, all_src = [], [], [], []
 
     for rec_idx, rec in enumerate(recs):
@@ -271,6 +285,7 @@ def _assemble_component_sparse(
             continue
 
         # Pre-build shot lookup: name → (R, t, cam_dict, label_path, img_path)
+        # Prefer undistorted poses/cameras when available (observations come from orig rec).
         shot_info: dict[str, tuple] = {}
         for sname, shot in shots.items():
             stem = Path(sname).stem
@@ -278,16 +293,22 @@ def _assemble_component_sparse(
             ip = img_dir / sname
             if not lp.exists():
                 continue
-            R = _angle_axis_to_R(np.array(shot["rotation"]))
-            t = np.array(shot["translation"], dtype=np.float64)
-            shot_info[sname] = (R, t, cameras[shot["camera"]], lp, ip)
+            if undist_shots and sname in undist_shots:
+                ushot = undist_shots[sname]
+                urec_cameras = undist_recs[0]["cameras"] if undist_recs else cameras
+                cam = urec_cameras.get(ushot["camera"], cameras[shot["camera"]])
+                R = _angle_axis_to_R(np.array(ushot["rotation"]))
+                t = np.array(ushot["translation"], dtype=np.float64)
+            else:
+                R = _angle_axis_to_R(np.array(shot["rotation"]))
+                t = np.array(shot["translation"], dtype=np.float64)
+                cam = cameras[shot["camera"]]
+            shot_info[sname] = (R, t, cam, lp, ip)
 
         lbl_cache: dict = {}
         img_cache: dict = {}
 
         # --- Vectorized sparse path ---
-        # Invert the index: build per-shot point lists
-        shot_to_points: dict = defaultdict(list)  # shot_name -> list of pt_idx
         point_xyz: dict = {}        # pt_idx -> xyz float32
         point_color: dict = {}      # pt_idx -> rgb uint8 (fallback from bundle point)
 
@@ -295,9 +316,20 @@ def _assemble_component_sparse(
             xyz = np.array(pt["coordinates"], dtype=np.float32)
             point_xyz[pt_idx] = xyz
             point_color[pt_idx] = np.array(pt.get("color", [128, 128, 128]), dtype=np.uint8)
-            for sname in pt.get("observations", {}):
-                if sname in shot_info:
-                    shot_to_points[sname].append(pt_idx)
+
+        # Build shot→point index from observations when available; otherwise
+        # project all points into every shot (OpenSfM strips observations from output).
+        shot_to_points: dict = defaultdict(list)
+        has_observations = any(pt.get("observations") for pt in points.values())
+        if has_observations:
+            for pt_idx, (pt_id, pt) in enumerate(points.items()):
+                for sname in pt.get("observations", {}):
+                    if sname in shot_info:
+                        shot_to_points[sname].append(pt_idx)
+        else:
+            all_pt_indices = list(range(len(points)))
+            for sname in shot_info:
+                shot_to_points[sname] = all_pt_indices
 
         # Accumulators per point
         point_label_votes: dict = defaultdict(list)   # pt_idx -> list of label ints

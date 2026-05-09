@@ -33,12 +33,14 @@ _PROCESSES = max(1, os.cpu_count() - 1)
 DEFAULT_OPENSFM_CONFIG = f"""\
 # Tuned for monocular phone walk-through with consumer GPS.
 feature_type: SIFT
-feature_min_frames: 2000
+feature_min_frames: 4000
 feature_process_size: 2048
-sift_peak_threshold: 0.066
+sift_peak_threshold: 0.04
 
 matcher_type: FLANN
-matching_gps_distance: 60
+# Wide GPS window (100m) captures revisited areas and improves connectivity
+# on open parking lots where nearby frames may be far apart in GPS.
+matching_gps_distance: 100
 matching_gps_neighbors: 24
 # 20 covers ±3-4 s at 6 fps — enough to bridge the gap between video clips when
 # frames are globally sorted by capture_time (see write_project).
