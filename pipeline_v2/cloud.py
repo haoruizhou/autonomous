@@ -331,11 +331,14 @@ def _assemble_component_sparse(
             for sname in shot_info:
                 shot_to_points[sname] = all_pt_indices
 
+        point_xyz_arr = np.stack([point_xyz[i] for i in range(len(points))]).astype(np.float64)
+
         # Accumulators per point
         point_label_votes: dict = defaultdict(list)   # pt_idx -> list of label ints
         point_img_color: dict = {}                     # pt_idx -> rgb from image (first valid)
+        chunk_size = 50_000
 
-        # Per-shot batch projection
+        # Per-shot batch projection. Process points in chunks to keep peak RAM bounded.
         for sname, pt_indices in shot_to_points.items():
             R, t, cam, lp, ip = shot_info[sname]
 
@@ -346,52 +349,61 @@ def _assemble_component_sparse(
             H, W = lbl.shape
             f = float(cam["focal"]) * max(W, H)
 
-            # Stack all point xyz for this shot: (N, 3)
-            xyzs = np.stack([point_xyz[i] for i in pt_indices], axis=0).astype(np.float64)
-
-            # Batch project: X_cam = xyzs @ R.T + t  (shape: N, 3)
-            X_cam = xyzs @ R.T + t
-
-            # Filter by depth
-            valid_depth = (X_cam[:, 2] > 0) & (X_cam[:, 2] < max_depth_m)
-
-            # Batch pixel coords
-            u = np.round(X_cam[:, 0] / X_cam[:, 2] * f + W / 2).astype(np.int32)
-            v = np.round(X_cam[:, 1] / X_cam[:, 2] * f + H / 2).astype(np.int32)
-
-            # Filter in-bounds
-            valid_bounds = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-            valid = valid_depth & valid_bounds
-
-            if not valid.any():
+            pt_indices_arr = np.asarray(pt_indices, dtype=np.int32)
+            if pt_indices_arr.size == 0:
                 continue
 
-            pt_indices_arr = np.array(pt_indices)
-            valid_pt_indices = pt_indices_arr[valid]
-            valid_u = u[valid]
-            valid_v = v[valid]
-
-            # Vectorized label lookup
-            labels = lbl[valid_v, valid_u]
-            for pt_idx, label in zip(valid_pt_indices.tolist(), labels.tolist()):
-                point_label_votes[pt_idx].append(int(label))
-
-            # Vectorized color lookup (load image once per shot)
+            img = None
             if ip.exists():
                 if ip not in img_cache:
                     img_cache[ip] = cv2.imread(str(ip))
                 img = img_cache[ip]
+
+            for chunk_start in range(0, pt_indices_arr.size, chunk_size):
+                chunk_indices = pt_indices_arr[chunk_start: chunk_start + chunk_size]
+                xyzs = point_xyz_arr[chunk_indices]
+
+                # Batch project: X_cam = xyzs @ R.T + t  (shape: N, 3)
+                X_cam = xyzs @ R.T + t
+                z = X_cam[:, 2]
+
+                # Filter by depth before division to avoid inf/nan allocations
+                valid_depth = (z > 0) & (z < max_depth_m) & np.isfinite(z)
+                if not valid_depth.any():
+                    continue
+
+                valid_idx = np.flatnonzero(valid_depth)
+                Xv = X_cam[valid_idx]
+                chunk_valid_indices = chunk_indices[valid_idx]
+
+                # Batch pixel coords
+                u = np.round(Xv[:, 0] / Xv[:, 2] * f + W / 2).astype(np.int32)
+                v = np.round(Xv[:, 1] / Xv[:, 2] * f + H / 2).astype(np.int32)
+
+                # Filter in-bounds
+                valid_bounds = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+                if not valid_bounds.any():
+                    continue
+
+                valid_pt_indices = chunk_valid_indices[valid_bounds]
+                valid_u = u[valid_bounds]
+                valid_v = v[valid_bounds]
+
+                # Vectorized label lookup
+                labels = lbl[valid_v, valid_u]
+                for pt_idx, label in zip(valid_pt_indices.tolist(), labels.tolist()):
+                    point_label_votes[pt_idx].append(int(label))
+
+                # Vectorized color lookup (load image once per shot)
                 if img is not None:
                     Hi, Wi = img.shape[:2]
-                    # Re-project with image dimensions (may differ from label map)
                     fi = float(cam["focal"]) * max(Wi, Hi)
-                    ui = np.round(X_cam[:, 0] / X_cam[:, 2] * fi + Wi / 2).astype(np.int32)
-                    vi = np.round(X_cam[:, 1] / X_cam[:, 2] * fi + Hi / 2).astype(np.int32)
+                    ui = np.round(Xv[:, 0] / Xv[:, 2] * fi + Wi / 2).astype(np.int32)
+                    vi = np.round(Xv[:, 1] / Xv[:, 2] * fi + Hi / 2).astype(np.int32)
                     valid_img_bounds = (ui >= 0) & (ui < Wi) & (vi >= 0) & (vi < Hi)
-                    valid_img = valid_depth & valid_img_bounds
-                    if valid_img.any():
-                        valid_img_pts = pt_indices_arr[valid_img]
-                        colors = img[vi[valid_img], ui[valid_img], ::-1]  # BGR → RGB
+                    if valid_img_bounds.any():
+                        valid_img_pts = chunk_valid_indices[valid_img_bounds]
+                        colors = img[vi[valid_img_bounds], ui[valid_img_bounds], ::-1]  # BGR → RGB
                         for pt_idx, color in zip(valid_img_pts.tolist(), colors):
                             if pt_idx not in point_img_color:
                                 point_img_color[pt_idx] = color
