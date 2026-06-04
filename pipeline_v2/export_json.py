@@ -150,6 +150,7 @@ def export_track_json(
     grass_margin_m: float = 12.0,
     road_buffer_m: float = 1.2,
     max_cells_per_class: int | None = None,
+    flatten_road: bool = False,
 ) -> Path:
     project_dir = Path(project_dir)
     cloud = np.load(project_dir / cloud_name)
