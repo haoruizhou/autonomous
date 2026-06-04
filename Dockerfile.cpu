@@ -1,0 +1,65 @@
+# Single CPU-only image: extract → semantic → SfM → cloud → cones → export → mesh → AC.
+# OpenSfM is built from pinned upstream source (no custom OMP base).
+# Build:  docker build -t autonomous:cpu -f Dockerfile.cpu .
+# Run:    docker run --rm -v $PWD:/in:ro -v /tmp/out:/out autonomous:cpu \
+#           --video /in/NH_20260429125648Z.mp4 --gpx /in/NHautocross/autocross.gpx \
+#           --out /out --fps 2
+
+# ---------- Stage 1: build OpenSfM from source ----------
+FROM ubuntu:24.04 AS opensfm-builder
+ARG DEBIAN_FRONTEND=noninteractive
+ARG OPENSFM_REF=main
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates \
+        libeigen3-dev libceres-dev libopencv-dev \
+        libgflags-dev libgoogle-glog-dev libsuitesparse-dev libboost-all-dev \
+        python3.12 python3.12-dev python3.12-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --recursive https://github.com/mapillary/OpenSfM /source/OpenSfM \
+    && cd /source/OpenSfM \
+    && git checkout ${OPENSFM_REF} \
+    && python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -U pip wheel \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && /opt/venv/bin/python setup.py build
+
+# ---------- Stage 2: runtime ----------
+FROM ubuntu:24.04 AS runtime
+ARG DEBIAN_FRONTEND=noninteractive
+ENV AUTONOMOUS_IN_CONTAINER=1 \
+    HF_HOME=/opt/models/hf \
+    TRANSFORMERS_OFFLINE=1 \
+    PATH=/opt/venv/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv \
+        libceres4t64 libopencv-dev libsuitesparse-dev libgomp1 \
+        libgoogle-glog0v6t64 libgflags2.2 \
+        ffmpeg ca-certificates \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# OpenSfM (built tree + its Python venv) from the builder stage.
+COPY --from=opensfm-builder /source/OpenSfM /source/OpenSfM
+COPY --from=opensfm-builder /opt/venv /opt/venv
+
+# Pipeline CPU deps + torch CPU wheels.
+COPY requirements-docker.txt /tmp/requirements-docker.txt
+RUN /opt/venv/bin/pip install --no-cache-dir \
+        torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements-docker.txt
+
+# Bake model weights so runs are offline.
+RUN /opt/venv/bin/python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download("facebook/mask2former-swin-tiny-cityscapes-semantic")
+from ultralytics import YOLO
+YOLO("yolov8s-world.pt")  # downloads to CWD
+PY
+RUN mkdir -p /opt/models && cp yolov8s-world.pt /opt/models/yolov8s-world.pt
+
+# App code + entrypoint.
+COPY pipeline_v2/ /app/pipeline_v2/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+WORKDIR /app
+ENTRYPOINT ["/entrypoint.sh"]
