@@ -22,6 +22,7 @@ commands in sequence inside the container. The project dir is bind-mounted at
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -85,7 +86,7 @@ def _purge_corrupt_intermediate_files(project_dir: Path) -> None:
                 f.unlink()
                 removed += 1
     if removed:
-        print(f"  Purged {removed} corrupt intermediate file(s) before starting Docker")
+        print(f"  Purged {removed} corrupt intermediate file(s) before starting OpenSfM")
 
 
 def run_opensfm(
@@ -120,6 +121,34 @@ def run_opensfm(
     subprocess.run(docker_cmd, check=True)
     subprocess.run(["docker", "run", "--rm", "-v", f"{project_dir}:/project",
                     image, "chmod", "-R", "a+rX", "/project"], check=False)
+    print("  OpenSfM done.")
+
+
+def run_opensfm_local(
+    project_dir: Path,
+    stages: Sequence[str] = _DEFAULT_STAGES,
+    extra_env: dict | None = None,
+    opensfm_dir: str = "/source/OpenSfM",
+) -> None:
+    """Run the OpenSfM pipeline natively (no Docker), e.g. inside the CPU image.
+
+    Invokes `bin/opensfm <stage> <project_dir>` from `opensfm_dir`, mirroring the
+    Docker path but without a container or bind mount.
+    """
+    project_dir = Path(project_dir).resolve()
+    if not (project_dir / "images").is_dir():
+        raise FileNotFoundError(f"{project_dir}/images is missing — run extract.py first")
+    if not (project_dir / "config.yaml").exists():
+        raise FileNotFoundError(f"{project_dir}/config.yaml is missing")
+    _purge_corrupt_intermediate_files(project_dir)
+
+    env = {**os.environ, **(extra_env or {})}
+    bin_opensfm = str(Path(opensfm_dir) / "bin" / "opensfm")
+    print(f"  Running OpenSfM natively on {project_dir} …")
+    print(f"  Stages: {' → '.join(stages)}")
+    for stage in stages:
+        subprocess.run([bin_opensfm, stage, str(project_dir)],
+                       cwd=opensfm_dir, env=env, check=True)
     print("  OpenSfM done.")
 
 
