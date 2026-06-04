@@ -62,6 +62,13 @@ def main() -> None:
                    help="Start offset in seconds into each video (default 0)")
     p.add_argument("--duration-sec", type=float, default=None,
                    help="Clip duration in seconds (default: full video)")
+    p.add_argument("--video-start", default=None,
+                   help="Explicit video frame-0 UTC start (ISO-8601, e.g. 2026-04-29T12:56:48Z). "
+                        "Overrides filename/metadata. Applies to a single --video only.")
+    p.add_argument("--min-coverage", type=float, default=0.6,
+                   help="Warn if GPS covers less than this fraction of the video (default 0.6)")
+    p.add_argument("--reject-coverage", type=float, default=0.1,
+                   help="Reject if GPS covers less than this fraction of the video (default 0.1)")
     p.add_argument("--stage", choices=(*_ALL_STAGES, "all"), default="all")
     p.add_argument("--skip", action="append", default=[],
                    help=f"Stages to skip when --stage all; choices: {_ALL_STAGES}")
@@ -105,7 +112,10 @@ def main() -> None:
     if run("extract"):
         print("\n[A] Extract frames + GPS → OpenSfM project")
         extract.write_project(args.video, args.gpx, project_dir, sample_fps=args.fps,
-                              start_sec=args.start_sec, duration_sec=args.duration_sec)
+                              start_sec=args.start_sec, duration_sec=args.duration_sec,
+                              video_start_override=args.video_start,
+                              min_coverage=args.min_coverage,
+                              reject_coverage=args.reject_coverage)
 
     if run("masks"):
         from pipeline_v2 import semantic  # noqa: PLC0415  lazy — loads torch/transformers

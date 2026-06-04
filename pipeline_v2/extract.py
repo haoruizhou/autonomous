@@ -14,18 +14,16 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
 import cv2
 
-# Reuse the v1 GPX/timestamp utilities — they're stable and well-tested.
-from track_pipeline import (
+from pipeline_v2.gps import (
     align_gpx_to_video,
     parse_gpx,
-    video_start_time_from_filename,
 )
+from pipeline_v2 import sync
 
 
 _PROCESSES = max(1, os.cpu_count() - 1)
@@ -92,6 +90,9 @@ def _collect_video_frames(
     jpeg_quality: int = 92,
     start_sec: float = 0.0,
     duration_sec: Optional[float] = None,
+    video_start_override: Optional[str] = None,
+    min_coverage: float = 0.6,
+    reject_coverage: float = 0.1,
 ) -> tuple[list[dict], dict]:
     """Decode sampled frames from one video into memory.
 
@@ -119,18 +120,23 @@ def _collect_video_frames(
           f"sample every {stride} → ~{(last_frame - first_frame) // stride} frames "
           f"({(last_frame - first_frame) / src_fps / 60:.1f} min)")
 
-    # Filename-anchored UTC start time — no metadata dependency.
+    # Resolve frame-0 UTC start, then validate against the GPS window.
     gpx_points = parse_gpx(gpx_path)
-    video_date = gpx_points[0]["time"].date()
-    t_start = video_start_time_from_filename(video_path, date=video_date)
-    if t_start is None:
-        t_start = datetime.now(timezone.utc)
-        print(f"  [warn] Could not parse timestamp from {video_path.name}, using now()")
-    aligned = align_gpx_to_video(gpx_points, video_path, src_fps)
-    # t_start is UTC frame-0 time; t_end derived below for metadata purposes.
-    t_end = datetime.fromtimestamp(
-        t_start.timestamp() + n_total / src_fps, tz=t_start.tzinfo
+    win = sync.gpx_time_window(gpx_points)
+    gpx_date = gpx_points[0]["time"].date()
+    t_start, source = sync.resolve_video_start(
+        video_path, gpx_date=gpx_date, override=video_start_override
     )
+    span_s = n_total / src_fps
+    report = sync.validate_alignment(
+        t_start, source, span_s, win,
+        video_name=video_path.name,
+        min_coverage=min_coverage,
+        reject_coverage=reject_coverage,
+    )
+    for w in report.warnings:
+        print(f"  [warn] {w}")
+    aligned = align_gpx_to_video(gpx_points, video_path, src_fps, t_start=t_start)
     creation_t = t_start
 
     frames: list[dict] = []
@@ -174,6 +180,9 @@ def write_project(
     config_yaml: Optional[str] = None,
     start_sec: float = 0.0,
     duration_sec: Optional[float] = None,
+    video_start_override: Optional[str] = None,
+    min_coverage: float = 0.6,
+    reject_coverage: float = 0.1,
 ) -> dict:
     """Build a single OpenSfM project from one or more videos sharing a GPX track.
 
@@ -189,6 +198,10 @@ def write_project(
     images_dir.mkdir(exist_ok=True)
 
     # ── 1. Collect all frames from all videos ────────────────────────────────
+    videos = list(videos)
+    if video_start_override and len(videos) > 1:
+        print("  [warn] --video-start ignored: applies only to a single video")
+        video_start_override = None
     all_frames: list[dict] = []
     summaries: list[dict] = []
     for vp in videos:
@@ -197,6 +210,9 @@ def write_project(
             sample_fps=sample_fps,
             start_sec=start_sec,
             duration_sec=duration_sec,
+            video_start_override=video_start_override,
+            min_coverage=min_coverage,
+            reject_coverage=reject_coverage,
         )
         all_frames.extend(frames)
         summaries.append(summary)
