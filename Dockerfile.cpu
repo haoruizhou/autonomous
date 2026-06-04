@@ -30,10 +30,9 @@ FROM ubuntu:24.04 AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ENV AUTONOMOUS_IN_CONTAINER=1 \
     HF_HOME=/opt/models/hf \
-    TRANSFORMERS_OFFLINE=1 \
     PATH=/opt/venv/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv \
+        python3 python3.12 \
         libceres4t64 libopencv-dev libsuitesparse-dev libgomp1 \
         libgoogle-glog0v6t64 libgflags2.2 \
         ffmpeg ca-certificates \
@@ -46,9 +45,15 @@ COPY --from=opensfm-builder /opt/venv /opt/venv
 
 # Pipeline CPU deps + torch CPU wheels.
 COPY requirements-docker.txt /tmp/requirements-docker.txt
+ARG TARGETARCH
 RUN /opt/venv/bin/pip install --no-cache-dir \
         torch torchvision --index-url https://download.pytorch.org/whl/cpu \
-    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements-docker.txt
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements-docker.txt \
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+         /opt/venv/bin/pip install --no-cache-dir "open3d>=0.18.0"; \
+       else \
+         echo "skipping open3d (no $TARGETARCH wheel) - mesh stage unavailable on this arch"; \
+       fi
 
 # Bake model weights so runs are offline.
 RUN /opt/venv/bin/python - <<'PY'
@@ -58,6 +63,10 @@ from ultralytics import YOLO
 YOLO("yolov8s-world.pt")  # downloads to CWD
 PY
 RUN mkdir -p /opt/models && cp yolov8s-world.pt /opt/models/yolov8s-world.pt
+
+# Models are baked above; enforce offline only from here on (so runs need no network).
+ENV TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1
 
 # App code + entrypoint.
 COPY pipeline_v2/ /app/pipeline_v2/
