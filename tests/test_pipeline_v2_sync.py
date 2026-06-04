@@ -149,3 +149,47 @@ def test_align_gpx_to_video_accepts_explicit_t_start():
     sig = inspect.signature(gps.align_gpx_to_video)
     assert "t_start" in sig.parameters
     assert sig.parameters["t_start"].default is None
+
+
+import cv2
+import numpy as np
+
+
+def _make_video(path: Path, n_frames=30, fps=10):
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    vw = cv2.VideoWriter(str(path), fourcc, fps, (64, 48))
+    for i in range(n_frames):
+        vw.write(np.full((48, 64, 3), i % 256, dtype=np.uint8))
+    vw.release()
+
+
+def _make_gpx(path: Path, first="2026-04-29T12:00:00Z", last="2026-04-29T12:00:09Z"):
+    body = (
+        '<?xml version="1.0"?>\n'
+        '<gpx xmlns="http://www.topografix.com/GPX/1/1"><trk><trkseg>'
+        f'<trkpt lat="43.0" lon="-71.0"><ele>100</ele><time>{first}</time></trkpt>'
+        f'<trkpt lat="43.0001" lon="-71.0001"><ele>100</ele><time>{last}</time></trkpt>'
+        '</trkseg></trk></gpx>'
+    )
+    path.write_text(body)
+
+
+def test_write_project_succeeds_when_times_agree(tmp_path):
+    from pipeline_v2 import extract
+    vid = tmp_path / "clip_120000Z.mp4"
+    gpx = tmp_path / "walk.gpx"
+    _make_video(vid)
+    _make_gpx(gpx)
+    summary = extract.write_project([vid], gpx, tmp_path / "proj", sample_fps=5)
+    assert summary["n_images"] > 0
+
+
+def test_write_project_rejects_when_times_disagree(tmp_path):
+    from pipeline_v2 import extract
+    from pipeline_v2.sync import AlignmentError
+    vid = tmp_path / "clip_120000Z.mp4"      # video at 12:00
+    gpx = tmp_path / "walk.gpx"
+    _make_video(vid)
+    _make_gpx(gpx, first="2026-04-29T14:00:00Z", last="2026-04-29T14:00:09Z")  # GPS at 14:00
+    with pytest.raises(AlignmentError):
+        extract.write_project([vid], gpx, tmp_path / "proj", sample_fps=5)
