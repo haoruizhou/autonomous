@@ -104,3 +104,66 @@ def resolve_video_start(
         f"Name it <stem>_HHMMSSZ.mp4 with the true UTC start, "
         f"or pass --video-start <ISO8601>."
     )
+
+
+@dataclass
+class AlignmentReport:
+    video_start: datetime
+    source: str
+    video_span_s: float
+    coverage: float
+    warnings: list[str] = field(default_factory=list)
+
+
+def compute_coverage(video_start: datetime, video_span_s: float, win: GpxWindow) -> float:
+    if video_span_s <= 0:
+        return 0.0
+    t0 = video_start.timestamp()
+    t1 = t0 + video_span_s
+    overlap = min(t1, win.t_last.timestamp()) - max(t0, win.t_first.timestamp())
+    return max(0.0, overlap) / video_span_s
+
+
+def _disagree_message(name, video_start, source, span_s, win, coverage) -> str:
+    t1 = datetime.fromtimestamp(video_start.timestamp() + span_s, tz=timezone.utc)
+    return (
+        f"video and GPS timelines do not agree for {name}.\n"
+        f"  video start : {video_start.isoformat()}  (source: {source})\n"
+        f"  video span  : {video_start.isoformat()} → {t1.isoformat()}  ({span_s/60:.1f} min)\n"
+        f"  GPS window  : {win.t_first.isoformat()} → {win.t_last.isoformat()}  "
+        f"({(win.t_last - win.t_first).total_seconds()/60:.1f} min)\n"
+        f"  coverage    : {coverage*100:.0f}%\n"
+        f"  fix         : name the video <stem>_HHMMSSZ.mp4 with its true UTC start, "
+        f"or pass --video-start <ISO8601>."
+    )
+
+
+def validate_alignment(
+    video_start: datetime,
+    source: str,
+    video_span_s: float,
+    win: GpxWindow,
+    *,
+    video_name: str = "video",
+    min_coverage: float = 0.6,
+    reject_coverage: float = 0.1,
+) -> AlignmentReport:
+    if reject_coverage > min_coverage:
+        raise ValueError(
+            f"reject_coverage ({reject_coverage}) must be <= min_coverage ({min_coverage})"
+        )
+    coverage = compute_coverage(video_start, video_span_s, win)
+    if coverage < reject_coverage:
+        raise AlignmentError(_disagree_message(video_name, video_start, source, video_span_s, win, coverage))
+    warnings: list[str] = []
+    if source == "metadata":
+        warnings.append(
+            "video start from metadata creation_time is AMBIGUOUS (start vs end); "
+            "prefer filename convention or --video-start"
+        )
+    if coverage < min_coverage:
+        warnings.append(
+            f"GPS covers only {coverage*100:.0f}% of the video; "
+            f"frames outside the GPS window get no GPS prior"
+        )
+    return AlignmentReport(video_start, source, video_span_s, coverage, warnings)
