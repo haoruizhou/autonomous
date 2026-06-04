@@ -15,13 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgflags-dev libgoogle-glog-dev libsuitesparse-dev libboost-all-dev \
         python3.12 python3.12-dev python3.12-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
+# OpenSfM has no root requirements.txt; deps + the C++ build are driven by
+# pyproject.toml via `pip install -e .` (matches OpenSfM's own Dockerfile.ubuntu24).
 RUN git clone --recursive https://github.com/mapillary/OpenSfM /source/OpenSfM \
     && cd /source/OpenSfM \
     && git checkout ${OPENSFM_REF} \
+    && git submodule update --init --recursive \
     && python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -U pip wheel \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && /opt/venv/bin/python setup.py build
+    && /opt/venv/bin/pip install --no-cache-dir -e .
 
 # ---------- Stage 2: runtime ----------
 FROM ubuntu:24.04 AS runtime
