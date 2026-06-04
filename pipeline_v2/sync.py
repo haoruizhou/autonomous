@@ -47,3 +47,60 @@ def gpx_time_window(gpx_points: list[dict]) -> GpxWindow:
         n_fixes=len(times),
         max_gap_s=max(gaps) if gaps else 0.0,
     )
+
+
+def video_creation_time(video_path: Path) -> Optional[datetime]:
+    """frame-0 UTC from MP4 metadata via ffprobe. AMBIGUOUS (start vs end)."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", str(video_path)],
+            capture_output=True, text=True, check=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    try:
+        tags = json.loads(result.stdout or "{}").get("format", {}).get("tags", {})
+        ct = tags.get("creation_time")
+    except (ValueError, AttributeError):
+        return None
+    if not ct:
+        return None
+    try:
+        return parse_iso_utc(ct)
+    except ValueError:
+        return None
+
+
+def resolve_video_start(
+    video_path: Path,
+    *,
+    gpx_date: date_cls,
+    override: Optional[str] = None,
+) -> tuple[datetime, str]:
+    """Resolve the video's frame-0 UTC start time and its source.
+
+    Priority: explicit ``override`` (ISO-8601) → filename convention
+    (``video_start_time_from_filename``) → ffprobe metadata. Raises
+    ``AlignmentError`` if none yields a time, or if ``override`` is not valid
+    ISO-8601. ``gpx_date`` supplies the date for time-only filename patterns.
+    Returns ``(start, source)`` with source in {"override","filename","metadata"}.
+    """
+    if override:
+        try:
+            return parse_iso_utc(override), "override"
+        except ValueError as e:
+            raise AlignmentError(
+                f"--video-start value {override!r} is not valid ISO-8601: {e}"
+            ) from e
+    t = video_start_time_from_filename(video_path, date=gpx_date)
+    if t is not None:
+        return t, "filename"
+    t = video_creation_time(video_path)
+    if t is not None:
+        return t, "metadata"
+    raise AlignmentError(
+        f"Cannot determine UTC start time for {video_path.name}. "
+        f"Name it <stem>_HHMMSSZ.mp4 with the true UTC start, "
+        f"or pass --video-start <ISO8601>."
+    )
