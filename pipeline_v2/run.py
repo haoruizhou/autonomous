@@ -69,6 +69,9 @@ def main() -> None:
                    help="Warn if GPS covers less than this fraction of the video (default 0.6)")
     p.add_argument("--reject-coverage", type=float, default=0.1,
                    help="Reject if GPS covers less than this fraction of the video (default 0.1)")
+    p.add_argument("--sfm-mode", choices=("auto", "local", "docker"), default="auto",
+                   help="Run OpenSfM natively (local), via Docker, or auto-detect "
+                        "(local inside the CPU image, docker on host). Default auto.")
     p.add_argument("--stage", choices=(*_ALL_STAGES, "all"), default="all")
     p.add_argument("--skip", action="append", default=[],
                    help=f"Stages to skip when --stage all; choices: {_ALL_STAGES}")
@@ -126,7 +129,7 @@ def main() -> None:
             semantic.generate_opensfm_masks(project_dir)
 
     if run("sfm"):
-        print("\n[B] OpenSfM (Docker)")
+        print("\n[B] OpenSfM")
         if args.gpu:
             gpu_image = args.docker_image if args.docker_image != "opensfm:ubuntu24" else "opensfm:ubuntu24_cuda"
             sfm.run_opensfm_gpu(project_dir, image=gpu_image)
@@ -134,7 +137,8 @@ def main() -> None:
             stages = list(sfm._DEFAULT_STAGES)
             if args.no_dense:
                 stages = [s for s in stages if s not in ("undistort", "compute_depthmaps")]
-            sfm.run_opensfm(project_dir, image=args.docker_image, stages=stages, platform=args.docker_platform)
+            sfm.run_sfm(project_dir, mode=args.sfm_mode, image=args.docker_image,
+                        stages=stages, platform=args.docker_platform)
         for k, v in sfm.collect_outputs(project_dir).items():
             print(f"  {k}: {v} (exists={v.exists()})")
 
