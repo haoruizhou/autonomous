@@ -202,6 +202,31 @@ def run_opensfm_gpu(
     print("  OpenSfM+OpenMVS GPU done.")
 
 
+def run_sfm(
+    project_dir: Path,
+    *,
+    mode: str = "auto",
+    image: str = "opensfm:ubuntu24",
+    stages: Sequence[str] = _DEFAULT_STAGES,
+    extra_env: dict | None = None,
+    platform: str | None = None,
+) -> None:
+    """Run OpenSfM either natively (in-container) or via Docker (host dev).
+
+    mode: "auto" picks local when AUTONOMOUS_IN_CONTAINER is set, else docker.
+    """
+    resolved = mode
+    if resolved == "auto":
+        resolved = "local" if os.environ.get("AUTONOMOUS_IN_CONTAINER") else "docker"
+    if resolved == "local":
+        run_opensfm_local(project_dir, stages=stages, extra_env=extra_env)
+    elif resolved == "docker":
+        run_opensfm(project_dir, image=image, stages=stages,
+                    extra_env=extra_env, platform=platform)
+    else:
+        raise ValueError(f"unknown sfm mode: {mode!r} (expected auto|local|docker)")
+
+
 def collect_outputs(project_dir: Path) -> dict:
     """Return paths to the artifacts the rest of the pipeline cares about."""
     project_dir = Path(project_dir)

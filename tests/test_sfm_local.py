@@ -50,3 +50,30 @@ def test_run_opensfm_local_requires_config_when_images_present(tmp_path, monkeyp
     (proj / "images").mkdir(parents=True)  # images present, config.yaml absent
     with pytest.raises(FileNotFoundError):
         sfm.run_opensfm_local(proj)
+
+
+def test_run_sfm_auto_uses_local_when_in_container(tmp_path, monkeypatch):
+    called = {}
+    monkeypatch.setattr(sfm, "run_opensfm_local", lambda *a, **k: called.setdefault("local", True))
+    monkeypatch.setattr(sfm, "run_opensfm", lambda *a, **k: called.setdefault("docker", True))
+    monkeypatch.setenv("AUTONOMOUS_IN_CONTAINER", "1")
+    sfm.run_sfm(tmp_path, mode="auto")
+    assert called == {"local": True}
+
+
+def test_run_sfm_auto_uses_docker_when_not_in_container(tmp_path, monkeypatch):
+    called = {}
+    monkeypatch.setattr(sfm, "run_opensfm_local", lambda *a, **k: called.setdefault("local", True))
+    monkeypatch.setattr(sfm, "run_opensfm", lambda *a, **k: called.setdefault("docker", True))
+    monkeypatch.delenv("AUTONOMOUS_IN_CONTAINER", raising=False)
+    sfm.run_sfm(tmp_path, mode="auto")
+    assert called == {"docker": True}
+
+
+def test_run_sfm_explicit_mode_overrides_env(tmp_path, monkeypatch):
+    called = {}
+    monkeypatch.setattr(sfm, "run_opensfm_local", lambda *a, **k: called.setdefault("local", True))
+    monkeypatch.setattr(sfm, "run_opensfm", lambda *a, **k: called.setdefault("docker", True))
+    monkeypatch.setenv("AUTONOMOUS_IN_CONTAINER", "1")
+    sfm.run_sfm(tmp_path, mode="docker")
+    assert called == {"docker": True}
