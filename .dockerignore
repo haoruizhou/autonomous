@@ -1,0 +1,11 @@
+.git
+.venv
+results
+*.mp4
+NHautocross/*.mp4
+frontend/node_modules
+docs
+__pycache__
+*.pyc
+.pytest_cache
+*.Zone.Identifier
