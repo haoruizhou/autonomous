@@ -20,8 +20,7 @@ from typing import Iterable, Optional
 
 import cv2
 
-# Reuse the v1 GPX/timestamp utilities — they're stable and well-tested.
-from track_pipeline import (
+from pipeline_v2.gps import (
     align_gpx_to_video,
     parse_gpx,
     video_start_time_from_filename,
