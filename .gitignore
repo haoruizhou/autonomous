@@ -209,4 +209,9 @@ colab_droid_pipeline.ipynb
 *.pt
 Depth-Anything-3/
 /frontend/node_modules
+
+# AI assistant artifacts (kept locally, never committed)
 /.claude
+/.cursor
+/.superpowers
+/CLAUDE.md
