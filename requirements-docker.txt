@@ -1,0 +1,18 @@
+# CPU-only dependency set for the Docker image (Dockerfile.cpu).
+# Torch CPU wheels are installed separately from the CPU index in the Dockerfile.
+# NOTE: this installs into the SAME /opt/venv that already holds OpenSfM's deps.
+# Use opencv-python (NOT -headless): mixing opencv-python and opencv-python-headless
+# in one env is a known conflict, and OpenSfM may already pull opencv-python.
+opencv-python>=4.9.0
+numpy>=1.26.0
+tqdm>=4.66.0
+pillow>=10.0.0
+scipy>=1.12.0
+transformers>=4.40.0,<5.0.0
+accelerate>=0.26.0
+ultralytics>=8.4.46
+imageio-ffmpeg>=0.6.0
+huggingface-hub>=0.23.0
+# mesh stage
+open3d>=0.18.0
+trimesh>=4.0.0
