@@ -139,3 +139,13 @@ def test_real_autocross_gpx_with_filename_start_passes():
     )
     report = sync.validate_alignment(start, "filename", 8 * 60.0, win)
     assert report.coverage > 0.6
+
+
+import inspect
+from pipeline_v2 import gps
+
+
+def test_align_gpx_to_video_accepts_explicit_t_start():
+    sig = inspect.signature(gps.align_gpx_to_video)
+    assert "t_start" in sig.parameters
+    assert sig.parameters["t_start"].default is None

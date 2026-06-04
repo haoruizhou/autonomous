@@ -74,6 +74,7 @@ def align_gpx_to_video(
     gpx_points: list[dict],
     video_path: Path,
     fps: float,
+    t_start: Optional[datetime] = None,
 ) -> list[Optional[dict]]:
     """
     Returns one GPX point (or None) per video frame — interpolated by timestamp.
@@ -85,8 +86,9 @@ def align_gpx_to_video(
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    video_date = gpx_points[0]["time"].date()
-    t_start = video_start_time_from_filename(video_path, date=video_date)
+    if t_start is None:
+        video_date = gpx_points[0]["time"].date()
+        t_start = video_start_time_from_filename(video_path, date=video_date)
     if t_start is None:
         print(f"  [warn] Cannot parse UTC start time from filename {video_path.name}; skipping GPS alignment.")
         return [None] * n_frames
