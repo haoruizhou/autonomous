@@ -230,10 +230,12 @@ def generate_opensfm_masks(
 ) -> dict:
     """Generate binary OpenSfM feature masks from semantic segmentation.
 
-    Writes <project>/masks/<stem>.png for each image: white (255) pixels are
-    masked out (people, riders, vehicles, bikes) so OpenSfM skips keypoints
-    there during detect_features.  Requires ``use_masks: yes`` in config.yaml
-    (added automatically by extract.write_project).
+    Writes <project>/masks/<stem>.png for each image. OpenSfM mask convention:
+    zero (black) pixels are IGNORED, non-zero (white) pixels are USED. So
+    dynamic objects (people, riders, vehicles, bikes) are written black (0) and
+    everything else (road, cones, scenery) white (255), making OpenSfM skip
+    keypoints only on the dynamic objects. Requires ``use_masks: yes`` in
+    config.yaml (added automatically by extract.write_project).
 
     Skips images whose mask file already exists.
     """
@@ -263,8 +265,9 @@ def generate_opensfm_masks(
         labels = label_images_batch(model, processor, device, batch_frames, batch_size=batch_size)
 
         for name, label in zip(batch_names, labels):
-            # REMOVED class → 255 (masked), everything else → 0 (valid)
-            mask = np.where(label == REMOVED, np.uint8(255), np.uint8(0))
+            # OpenSfM masks: 0 = ignore, non-zero = use. Dynamic objects
+            # (REMOVED) → 0 so they are skipped; everything else → 255 (used).
+            mask = np.where(label == REMOVED, np.uint8(0), np.uint8(255))
             cv2.imwrite(str(out_dir / f"{name}.png"), mask)
             summary["n_written"] += 1
             if summary["n_written"] % 20 == 0:
