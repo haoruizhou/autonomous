@@ -34,5 +34,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: a8afa9c28087b49cda7910b712a4e9b7
-          command: pages deploy dist --project-name=autocross-simulator
+          command: pages deploy dist --project-name=autocross-simulator --branch=autonomous
           workingDirectory: frontend
